@@ -515,6 +515,7 @@ async function finishUpload(sessionRec, durationMs) {
     await sessionRec.uploader.finish();
     await api.completeVideo(sessionRec.video.id, durationMs, sessionRec.uploader.totalBytes);
     notify("Your video is ready", sessionRec.video.title ?? sessionRec.video.shareUrl, () => shell.openExternal(sessionRec.video.shareUrl));
+    win.panel?.webContents.send("panel:recent-changed");
     const i = failedUploads.indexOf(sessionRec);
     if (i >= 0) failedUploads.splice(i, 1);
   } catch (err) {
@@ -674,6 +675,23 @@ ipcMain.on("panel:settings", (_e, patch) => {
 ipcMain.on("panel:login-item", (_e, enabled) => app.isPackaged && app.setLoginItemSettings({ openAtLogin: Boolean(enabled) }));
 ipcMain.on("panel:close", () => hidePanel());
 ipcMain.on("panel:library", () => openLibrary());
+ipcMain.handle("panel:recent", async () => {
+  const server = api.serverUrl();
+  const { videos } = await api.recent(4);
+  return videos.map((v) => ({
+    id: v.id,
+    title: v.title,
+    status: v.status,
+    durationMs: v.durationMs,
+    createdAt: v.createdAt,
+    thumbUrl: v.thumbUrl,
+    shareUrl: `${server}/share/${v.id}`,
+  }));
+});
+ipcMain.handle("panel:copy", (_e, text) => {
+  clipboard.writeText(String(text ?? ""));
+  return true;
+});
 ipcMain.on("panel:open-url", (_e, url) => /^https?:\/\//.test(String(url)) && shell.openExternal(url));
 ipcMain.on("panel:recordings-folder", () => shell.openPath(config.RECORDINGS_DIR));
 ipcMain.on("panel:quit", () => app.quit());

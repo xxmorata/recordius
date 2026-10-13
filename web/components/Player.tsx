@@ -1,36 +1,52 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Maximize, Minimize, Pause, PictureInPicture2, Play, Volume2, VolumeX } from "lucide-react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { Loader2, Maximize, Minimize, Pause, PictureInPicture2, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { cx } from "./ui";
 import { formatDuration } from "@/lib/format";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
+export type PlayerHandle = {
+  /** JPEG of the frame on screen (max 1280 px wide). */
+  captureFrame: () => Promise<Blob>;
+  /** Position on the (trimmed) timeline, in seconds. */
+  currentTime: () => number;
+};
+
 type Props = {
   src: string;
   poster?: string | null;
+  /** Start position in seconds on the trimmed timeline (e.g. from ?t=). */
   startAt?: number | null;
+  /** Only this part of the file is played; times shown are relative to its start. */
+  trim?: { startMs: number; endMs: number } | null;
   autoPlay?: boolean;
   onFirstPlay?: () => void;
+  /** Seconds on the trimmed timeline, on every time update. */
   onTime?: (seconds: number) => void;
   className?: string;
 };
 
-/** Loom-style player: custom controls, keyboard shortcuts, speed, PiP, fullscreen, scrubbing with preview time. */
-export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, className }: Props) {
+/**
+ * Loom-style player: custom controls, keyboard shortcuts, speed, PiP, fullscreen, scrubbing with preview time.
+ * Everything the viewer sees works on a "virtual" timeline that starts at the trim start and ends at the
+ * trim end, so a trimmed video looks and behaves exactly like a shorter one.
+ */
+export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, className }, ref) {
   const root = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const bar = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const played = useRef(false);
+  const startApplied = useRef(false);
 
   const [playing, setPlaying] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [buffered, setBuffered] = useState(0);
+  const [time, setTime] = useState(0); // virtual seconds
+  const [fileDuration, setFileDuration] = useState(0);
+  const [buffered, setBuffered] = useState(0); // virtual seconds
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [speed, setSpeed] = useState(1);
@@ -40,7 +56,28 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
   const [scrubbing, setScrubbing] = useState(false);
   const [pipAvailable, setPipAvailable] = useState(false);
 
+  const base = trim ? trim.startMs / 1000 : 0;
+  const end = trim ? Math.min(trim.endMs / 1000, fileDuration || Infinity) : fileDuration;
+  const duration = Math.max(0, end - base);
+  const bounds = useRef({ base, end, duration });
+  bounds.current = { base, end, duration };
+
   useEffect(() => setPipAvailable("pictureInPictureEnabled" in document && document.pictureInPictureEnabled), []);
+
+  useImperativeHandle(ref, () => ({
+    currentTime: () => Math.max(0, (video.current?.currentTime ?? 0) - bounds.current.base),
+    captureFrame: () =>
+      new Promise<Blob>((resolve, reject) => {
+        const v = video.current;
+        if (!v || !v.videoWidth) return reject(new Error("The video isn't ready yet"));
+        const scale = Math.min(1, 1280 / v.videoWidth);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(v.videoWidth * scale);
+        canvas.height = Math.round(v.videoHeight * scale);
+        canvas.getContext("2d")!.drawImage(v, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't grab the frame"))), "image/jpeg", 0.86);
+      }),
+  }));
 
   const poke = useCallback(() => {
     setVisible(true);
@@ -50,19 +87,47 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
 
   useEffect(() => () => clearTimeout(hideTimer.current), []);
 
+  /** Seek on the virtual timeline. */
+  const seek = useCallback((t: number) => {
+    const v = video.current;
+    const { base, duration } = bounds.current;
+    if (!v || !duration) return;
+    const clamped = Math.min(Math.max(0, t), Math.max(0, duration - 0.05));
+    v.currentTime = base + clamped;
+    setTime(clamped);
+    setEnded(false);
+  }, []);
+
   const toggle = useCallback(() => {
     const v = video.current;
     if (!v) return;
-    if (v.paused || v.ended) v.play().catch(() => {});
-    else v.pause();
+    const { base, end } = bounds.current;
+    if (v.paused || v.ended) {
+      // Replay from the (trimmed) start once the end was reached.
+      if (v.ended || v.currentTime >= end - 0.05 || v.currentTime < base) v.currentTime = base;
+      v.play().catch(() => {});
+    } else v.pause();
   }, []);
 
-  const seek = useCallback((t: number) => {
-    const v = video.current;
-    if (!v || !Number.isFinite(v.duration)) return;
-    v.currentTime = Math.min(Math.max(0, t), v.duration);
-    setTime(v.currentTime);
-  }, []);
+  // Stop exactly at the trim end (timeupdate alone fires only ~4×/s and would overshoot).
+  useEffect(() => {
+    if (!playing || !trim) return;
+    let raf = 0;
+    const check = () => {
+      const v = video.current;
+      const { end } = bounds.current;
+      if (v && end && v.currentTime >= end - 0.02) {
+        v.pause();
+        v.currentTime = end;
+        setTime(bounds.current.duration);
+        setEnded(true);
+        return;
+      }
+      raf = requestAnimationFrame(check);
+    };
+    raf = requestAnimationFrame(check);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, trim]);
 
   function toggleFullscreen() {
     const el = root.current;
@@ -77,26 +142,39 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
+  // A new trim (owner just saved one) moves the playhead into the kept part.
+  useEffect(() => {
+    const v = video.current;
+    if (!v || !fileDuration) return;
+    if (v.currentTime < base || v.currentTime > end) {
+      v.currentTime = base;
+      setTime(0);
+    }
+  }, [base, end, fileDuration]);
+
   // Keyboard shortcuts while the player (or page body) has focus.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName) && e.key === " ") return;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
+      if (document.querySelector("dialog[open]")) return;
       const v = video.current;
       if (!v) return;
+      const now = v.currentTime - bounds.current.base;
       const key = e.key.toLowerCase();
       if (key === " " || key === "k") {
         e.preventDefault();
         toggle();
-      } else if (key === "arrowleft" || key === "j") seek(v.currentTime - (key === "j" ? 10 : 5));
-      else if (key === "arrowright" || key === "l") seek(v.currentTime + (key === "l" ? 10 : 5));
+      } else if (key === "arrowleft" || key === "j") seek(now - (key === "j" ? 10 : 5));
+      else if (key === "arrowright" || key === "l") seek(now + (key === "l" ? 10 : 5));
       else if (key === "m") v.muted = !v.muted;
       else if (key === "f") toggleFullscreen();
       else if (key === "arrowup" || key === "arrowdown") {
         e.preventDefault();
         v.volume = Math.min(1, Math.max(0, v.volume + (key === "arrowup" ? 0.1 : -0.1)));
         v.muted = false;
-      } else if (/^[0-9]$/.test(key) && Number.isFinite(v.duration)) seek((Number(key) / 10) * v.duration);
+      } else if (/^[0-9]$/.test(key) && bounds.current.duration) seek((Number(key) / 10) * bounds.current.duration);
       else if (key === ">" || key === "<") {
         const i = SPEEDS.indexOf(v.playbackRate);
         const next = SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i + (key === ">" ? 1 : -1)))];
@@ -134,7 +212,7 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
   }
 
   const progress = duration ? (time / duration) * 100 : 0;
-  const bufferedPct = duration ? (buffered / duration) * 100 : 0;
+  const bufferedPct = duration ? Math.min(100, (buffered / duration) * 100) : 0;
   const controlsShown = visible || !playing || scrubbing;
 
   return (
@@ -150,6 +228,7 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
         ref={video}
         src={src}
         poster={poster ?? undefined}
+        crossOrigin="anonymous"
         playsInline
         preload="metadata"
         autoPlay={autoPlay}
@@ -166,25 +245,34 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
           }
         }}
         onPause={() => setPlaying(false)}
-        onEnded={() => setEnded(true)}
+        onEnded={() => {
+          setEnded(true);
+          setPlaying(false);
+        }}
         onWaiting={() => setWaiting(true)}
         onPlaying={() => setWaiting(false)}
         onCanPlay={() => setWaiting(false)}
         onLoadedMetadata={(e) => {
           const v = e.currentTarget;
-          setDuration(v.duration);
+          setFileDuration(v.duration);
           v.playbackRate = speed;
-          if (startAt != null && startAt > 0 && startAt < v.duration) v.currentTime = startAt;
+          if (startApplied.current) return;
+          startApplied.current = true;
+          const b = trim ? trim.startMs / 1000 : 0;
+          const len = (trim ? Math.min(trim.endMs / 1000, v.duration) : v.duration) - b;
+          const offset = startAt != null && startAt > 0 && startAt < len ? startAt : 0;
+          if (b + offset > 0) v.currentTime = b + offset;
         }}
-        onDurationChange={(e) => setDuration(e.currentTarget.duration)}
+        onDurationChange={(e) => setFileDuration(e.currentTarget.duration)}
         onTimeUpdate={(e) => {
-          if (!scrubbing) setTime(e.currentTarget.currentTime);
-          onTime?.(e.currentTarget.currentTime);
+          const t = Math.min(Math.max(0, e.currentTarget.currentTime - bounds.current.base), bounds.current.duration);
+          if (!scrubbing) setTime(t);
+          onTime?.(t);
         }}
         onProgress={(e) => {
           const v = e.currentTarget;
           for (let i = 0; i < v.buffered.length; i++) {
-            if (v.buffered.start(i) <= v.currentTime && v.buffered.end(i) >= v.currentTime) setBuffered(v.buffered.end(i));
+            if (v.buffered.start(i) <= v.currentTime && v.buffered.end(i) >= v.currentTime) setBuffered(v.buffered.end(i) - bounds.current.base);
           }
         }}
         onVolumeChange={(e) => {
@@ -207,7 +295,7 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
           aria-label={ended ? "Replay" : "Play"}
         >
           <span className="grid size-[72px] place-items-center rounded-full bg-white/95 text-ink shadow-[0_8px_30px_rgba(0,0,0,0.35)] transition hover:scale-105">
-            <Play className="ml-1 size-7 fill-current" />
+            {ended ? <RotateCcw className="size-7" /> : <Play className="ml-1 size-7 fill-current" />}
           </span>
         </button>
       )}
@@ -300,7 +388,7 @@ export function Player({ src, poster, startAt, autoPlay, onFirstPlay, onTime, cl
       </div>
     </div>
   );
-}
+});
 
 function Ctl({ children, onClick, label }: { children: React.ReactNode; onClick: () => void; label: string }) {
   return (

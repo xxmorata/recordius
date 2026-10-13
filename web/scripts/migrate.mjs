@@ -22,15 +22,17 @@ try {
   const applied = new Set((await sql`select name from schema_migrations`).map((r) => r.name));
   const dir = join(process.cwd(), "db", "migrations");
   let count = 0;
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
-    if (applied.has(file)) continue;
-    await sql.begin(async (tx) => {
+  await sql.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(727274)`;
+    const done = new Set((await tx`select name from schema_migrations`).map((r) => r.name));
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+      if (done.has(file) || applied.has(file) && done.has(file)) continue;
       await tx.unsafe(readFileSync(join(dir, file), "utf8"));
       await tx`insert into schema_migrations (name) values (${file})`;
-    });
-    console.log(`applied ${file}`);
-    count++;
-  }
+      console.log(`applied ${file}`);
+      count++;
+    }
+  });
   console.log(count ? `${count} migration(s) applied` : "database is up to date");
 } finally {
   await sql.end();

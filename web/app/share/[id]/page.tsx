@@ -7,7 +7,8 @@ import { Avatar } from "@/components/ui";
 import { HttpError, currentUser } from "@/lib/auth";
 import { viewUrl } from "@/lib/blob";
 import { appUrl } from "@/lib/env";
-import { getVideoFor, videoExists } from "@/lib/videos";
+import { LinkLockedError, getVideoFor, videoExists } from "@/lib/videos";
+import { LinkGate } from "@/components/LinkGate";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -44,6 +45,7 @@ export default async function SharePage({ params }: Props) {
   try {
     result = await getVideoFor(id, user);
   } catch (err) {
+    if (err instanceof LinkLockedError) return <LinkGate videoId={id} reason={err.reason} />;
     if (err instanceof HttpError && err.status === 401) redirect(`/login?next=${encodeURIComponent(`/share/${id}`)}`);
     if (err instanceof HttpError && err.status === 403) return <NoAccess exists={await videoExists(id)} userEmail={user?.email ?? null} />;
     return <NoAccess exists={false} userEmail={user?.email ?? null} />;

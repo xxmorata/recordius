@@ -4,6 +4,7 @@ export type Role = "owner" | "admin" | "member";
 export type Privacy = "link" | "workspace" | "private";
 export type VideoStatus = "recording" | "ready" | "failed";
 export type Access = "owner" | "member" | "invited" | "link";
+export type VideoSource = "recording" | "upload";
 export type LibraryScope = "mine" | "workspace" | "archive";
 
 export const PRIVACY_LABELS: Record<Privacy, { title: string; description: string }> = {
@@ -19,7 +20,14 @@ export type Video = {
   status: VideoStatus;
   privacy: Privacy;
   mimeType: string;
+  /** Length people watch: the trimmed length when a trim is set. */
   durationMs: number | null;
+  /** Length of the file itself. */
+  originalDurationMs: number | null;
+  trim: { startMs: number; endMs: number } | null;
+  source: VideoSource;
+  /** Link-sharing extras (only meaningful when privacy is "link"). Owners see these; viewers never get the password. */
+  link: { hasPassword: boolean; expiresAt: number | null };
   size: number | null;
   views: number;
   createdAt: number;
@@ -29,6 +37,9 @@ export type Video = {
   downloadUrl: string | null;
   thumbUrl: string | null;
 };
+
+export type Viewer = { name: string; email: string; avatarUrl: string | null; percent: number; lastSeenAt: number };
+export type ViewerStats = { viewers: Viewer[]; anonymous: { count: number; avgPercent: number }; total: number };
 
 export type Member = { id: string; name: string; email: string; role: Role; avatarPath: string | null; joinedAt: number; videos: number };
 

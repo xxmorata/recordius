@@ -79,6 +79,8 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
     await js(`document.getElementById('settingsBack').click()`);
     await wait(300);
     r.startEnabled = await js(`!document.getElementById('start').disabled`);
+    r.recentCount = await js(`document.querySelectorAll('.recent-item').length`);
+    r.recentShot = await shot(win.panel, "panel-recent");
     r.checksVisible = await js(`[...document.querySelectorAll('.opt .check')].filter((c) => getComputedStyle(c).display !== 'none').length`);
     await wait(2500); // let any pending source/device loads settle, like a user would
     hidePanel(); // what Esc / the close button do

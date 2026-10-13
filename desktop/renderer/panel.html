@@ -78,6 +78,15 @@
       .banner button { background: var(--brand); color: #fff; border-radius: 7px; padding: 5px 9px; font-weight: 500; white-space: nowrap; font-size: 12px; }
       .banner button.ghost { background: transparent; color: var(--brand); border: 1px solid var(--brand); }
 
+      .recent-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px; border-radius: 10px; text-align: left; }
+      .recent-item:hover { background: var(--surface-2); }
+      .recent-item .rthumb { width: 56px; height: 34px; border-radius: 6px; background: #1b1b21 center / cover no-repeat; flex: none; }
+      .recent-item .rmeta { flex: 1; min-width: 0; }
+      .recent-item .rmeta b { display: block; font-weight: 500; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .recent-item .rmeta small { color: var(--ink-3); font-size: 11.5px; }
+      .recent-item .copy { flex: none; font-size: 11.5px; font-weight: 600; color: var(--accent); padding: 5px 8px; border-radius: 7px; }
+      .recent-item .copy:hover { background: var(--accent-soft); }
+      .recent-item .copy.done { color: var(--green); }
       footer { display: grid; grid-template-columns: repeat(2, 1fr); border-top: 1px solid var(--line); }
       footer .ext { width: 11px; height: 11px; display: inline; vertical-align: -1px; color: var(--ink-4); }
       footer button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 4px 11px; font-size: 11.5px; color: var(--ink-2); font-weight: 500; }
@@ -213,6 +222,11 @@
             <span class="kbd" id="startKbd">⌘⇧R</span>
           </button>
           <p class="hint" id="hint">Your link is copied the moment you stop</p>
+
+          <section class="recent" id="recent" hidden>
+            <p class="opt-title" style="margin: 6px 2px 2px">Recent</p>
+            <div id="recentList"></div>
+          </section>
         </div>
 
         <footer>

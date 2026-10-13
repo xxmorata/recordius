@@ -222,6 +222,144 @@ await expectStatus(r, 403, "revoked invitee blocked");
 r = await owner.call("GET", `/embed/${video.id}`);
 await expectStatus(r, 200, "embed page for owner");
 
+section("trim, protected links, viewers, thumbnails");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { privacy: "link" });
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 1000, endMs: 1500 } });
+await expectStatus(r, 400, "trim shorter than 1 s rejected");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 500, endMs: 9000 } });
+await expectStatus(r, 400, "trim past the end rejected");
+r = await member.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 0, endMs: 2000 } });
+await expectStatus(r, 403, "member can't trim someone else's video");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 1000, endMs: 3500 } });
+await expectStatus(r, 200, "trim saved");
+r = await anon.call("GET", `/api/videos/${video.id}`);
+assert.deepEqual(r.json.trim, { startMs: 1000, endMs: 3500 });
+assert.equal(r.json.durationMs, 2500);
+assert.equal(r.json.originalDurationMs, 4200);
+ok("viewers get the trimmed length");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 0, endMs: 4200 } });
+r = await anon.call("GET", `/api/videos/${video.id}`);
+assert.equal(r.json.trim, null);
+ok("full-length trim is stored as no trim");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 1000, endMs: 3500 } });
+
+// watch progress & unique viewers
+const watcherA = client();
+const watcherB = client();
+r = await watcherA.call("POST", `/api/videos/${video.id}/view`, { positionMs: 0 });
+await expectStatus(r, 200, "anonymous view recorded");
+await watcherA.call("POST", `/api/videos/${video.id}/view`, { positionMs: 2000 });
+await watcherA.call("POST", `/api/videos/${video.id}/view`, { positionMs: 500 }); // going back doesn't lower progress
+await watcherB.call("POST", `/api/videos/${video.id}/view`, { positionMs: 1250 });
+await member.call("POST", `/api/videos/${video.id}/view`, { positionMs: 2500 });
+r = await owner.call("GET", `/api/videos/${video.id}/viewers`);
+await expectStatus(r, 200, "owner sees viewers");
+// 4 = the anonymous viewer from the privacy section (stopped at 0%) + watcherA + watcherB + member
+assert.equal(r.json.total, 4, "4 distinct viewers");
+assert.equal(r.json.viewers.length, 1);
+assert.equal(r.json.viewers[0].email, `member${stamp}@test.dev`);
+assert.equal(r.json.viewers[0].percent, 100);
+assert.equal(r.json.anonymous.count, 3);
+assert.equal(r.json.anonymous.avgPercent, 43, "avg of 0%, 80% and 50%");
+ok("progress per viewer (max position, trimmed timeline)");
+r = await owner.call("GET", `/api/videos/${video.id}`);
+const viewsBefore = r.json.views;
+await watcherA.call("POST", `/api/videos/${video.id}/view`, { positionMs: 2400 });
+r = await owner.call("GET", `/api/videos/${video.id}`);
+assert.equal(r.json.views, viewsBefore, "repeat reports don't add views");
+ok("views count unique viewers");
+r = await member.call("GET", `/api/videos/${video.id}/viewers`);
+await expectStatus(r, 403, "member can't see viewer list");
+
+// password-protected link
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "abc" });
+await expectStatus(r, 400, "too-short password rejected");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "open sesame" });
+await expectStatus(r, 200, "password set");
+const guest = client();
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 401, "password needed");
+assert.ok(!JSON.stringify(r.json).includes("blob"), "no urls leak before unlocking");
+r = await guest.call("GET", `/share/${video.id}`);
+await expectStatus(r, 200, "share page shows the password screen");
+assert.ok(r.text.includes("password protected") && !r.text.includes("Renamed") && !r.text.includes("API smoke test"));
+r = await guest.call("POST", `/api/videos/${video.id}/unlock`, { password: "nope" });
+await expectStatus(r, 403, "wrong password");
+r = await guest.call("POST", `/api/videos/${video.id}/unlock`, { password: "open sesame" });
+await expectStatus(r, 200, "right password");
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 200, "unlocked guest can watch");
+assert.ok(r.json.videoUrl);
+r = await member.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 200, "workspace members skip the password");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "another one" });
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 401, "changing the password re-locks");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: null });
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 200, "removing the password opens it");
+assert.equal(r.json.link.hasPassword, false);
+
+// expiring link
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkExpiresAt: Date.now() - 1000 });
+await expectStatus(r, 400, "expiry in the past rejected");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkExpiresAt: Date.now() + 1500 });
+await expectStatus(r, 200, "expiry set");
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 200, "works before expiry");
+await new Promise((res) => setTimeout(res, 2000));
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 410, "expired link refused");
+r = await guest.call("GET", `/share/${video.id}`);
+assert.ok(r.text.includes("This link has expired"));
+ok("share page explains the expiry");
+r = await member.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 200, "members still see an expired-link video");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkExpiresAt: null });
+r = await guest.call("GET", `/api/videos/${video.id}`);
+await expectStatus(r, 200, "expiry removed");
+
+// custom thumbnail
+{
+  const fd = new FormData();
+  fd.set("file", new File([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9])], "t.jpg", { type: "image/jpeg" }));
+  r = await owner.call("POST", `/api/videos/${video.id}/thumbnail`, fd);
+  await expectStatus(r, 200, "custom thumbnail saved");
+  const first = new URL(r.json.thumbUrl).pathname;
+  assert.ok(/thumb-[\w-]+\.jpg$/.test(first));
+  const fd2 = new FormData();
+  fd2.set("file", new File([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 7])], "t.jpg", { type: "image/jpeg" }));
+  r = await owner.call("POST", `/api/videos/${video.id}/thumbnail`, fd2);
+  assert.notEqual(new URL(r.json.thumbUrl).pathname, first, "new file name, so caches can't serve the old one");
+  r = await guest.call("GET", `/api/videos/${video.id}`);
+  assert.equal(new URL(r.json.thumbUrl).pathname.split("/").pop(), new URL(r.json.thumbUrl).pathname.split("/").pop());
+  assert.ok(new URL(r.json.thumbUrl).pathname.includes("thumb-"));
+  ok("viewers get the custom thumbnail");
+  const fd3 = new FormData();
+  fd3.set("file", new File([Buffer.from("x")], "t.png", { type: "image/png" }));
+  r = await owner.call("POST", `/api/videos/${video.id}/thumbnail`, fd3);
+  await expectStatus(r, 400, "non-JPEG thumbnail rejected");
+  r = await member.call("POST", `/api/videos/${video.id}/thumbnail`, fd);
+  await expectStatus(r, 403, "member can't change the thumbnail");
+}
+
+// browser upload flow (same as the library's drag & drop)
+{
+  r = await owner.call("POST", "/api/videos", { title: "uploaded.mov", mimeType: "video/mp4", source: "upload" });
+  await expectStatus(r, 200, "upload session created");
+  const up = r.json;
+  r = await owner.call("GET", `/api/videos/${up.id}`);
+  assert.equal(r.json.source, "upload");
+  await put(up.upload.videoPathname, Buffer.alloc(1024, 3), { access: "private", token: up.upload.videoToken, contentType: "video/mp4" });
+  r = await owner.call("POST", `/api/videos/${up.id}/complete`, { durationMs: 3000, size: 1024 });
+  await expectStatus(r, 200, "uploaded file completed");
+  r = await owner.call("GET", "/api/videos?scope=mine&limit=1");
+  assert.equal(r.json.videos.length, 1);
+  assert.equal(r.json.videos[0].id, up.id, "newest first, limit respected");
+  ok("recent list with limit (desktop app)");
+  await owner.call("DELETE", `/api/videos/${up.id}`);
+}
+
 section("library & lifecycle");
 r = await owner.call("GET", "/api/videos?scope=mine");
 assert.equal(r.json.videos.length, 1);

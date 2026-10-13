@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Player } from "@/components/Player";
+import { useWatchReporting } from "@/components/useWatchReporting";
 import { api } from "@/components/ui";
 import type { Video } from "@/lib/types";
 import { parseStartTime } from "@/lib/format";
@@ -9,6 +10,7 @@ import { parseStartTime } from "@/lib/format";
 export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: string }) {
   const [video, setVideo] = useState(initial);
   const [startAt, setStartAt] = useState<number | null>(null);
+  const watch = useWatchReporting(video.id, true);
 
   useEffect(() => setStartAt(parseStartTime(new URLSearchParams(window.location.search).get("t"))), []);
 
@@ -28,8 +30,10 @@ export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: s
           src={video.videoUrl}
           poster={video.thumbUrl}
           startAt={startAt}
+          trim={video.trim}
           className="h-full rounded-none"
-          onFirstPlay={() => fetch(`/api/videos/${video.id}/view`, { method: "post" }).catch(() => {})}
+          onTime={watch.onTime}
+          onFirstPlay={watch.onFirstPlay}
         />
       ) : (
         <div className="grid size-full place-items-center text-sm text-white/70">{video.status === "failed" ? "This upload didn’t finish." : "This video is still uploading…"}</div>

@@ -58,10 +58,10 @@ Put it behind HTTPS (Caddy, nginx, Traefik, a cloud load balancer). `APP_URL` mu
 
 Any Postgres 14+ works: Neon, Supabase, RDS, Cloud SQL, Railway, Fly, or a container. Migrations live in `web/db/migrations/*.sql` and are applied in order, once, tracked in `schema_migrations`:
 
-- automatically when someone opens `/setup` on an empty database;
-- or manually with `npm run db:migrate` (reads `DATABASE_URL` from the environment or `.env.local`).
+- **automatically every time a server instance starts** (`web/instrumentation.ts`), protected by a Postgres advisory lock so parallel instances don't race. Upgrading is therefore just *deploy the new version* — on Vercel, Docker or anywhere else;
+- or manually with `npm run db:migrate` (reads `DATABASE_URL` from the environment or `.env.local`), if you prefer to migrate before switching traffic.
 
-When you upgrade Recordius, run `npm run db:migrate` (Docker: `docker exec recordius node scripts/migrate.mjs`). On Vercel, new migrations are applied by the next visit to `/setup` only on empty databases — for existing ones run the migrate script locally against the production `DATABASE_URL` (`vercel env pull` gives you the value).
+Migrations only add tables and columns, so an older deployment keeps working against a newer schema during a rollout.
 
 ## Accounts, invites and passwords
 
@@ -86,7 +86,7 @@ avatars/<userId>/<nonce>.jpg     profile pictures
 ## Updating Recordius
 
 - **Vercel:** merge the upstream changes into your fork (GitHub's *Sync fork* button) — Vercel redeploys automatically.
-- **Docker:** `git pull`, rebuild the image, restart the container, run migrations.
+- **Docker:** `git pull`, rebuild the image, restart the container (migrations run on start).
 - The **desktop app** checks the GitHub releases of `xxmorata/recordius` and updates itself without re-asking for macOS permissions. If you fork the project and build your own releases, change `updateRepo` in `desktop/src/config.js`.
 
 ## Backups

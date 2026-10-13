@@ -33,15 +33,18 @@ export async function migrate(): Promise<string[]> {
   const applied = new Set((await db`select name from schema_migrations`).map((r) => r.name as string));
   const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
   const ran: string[] = [];
-  for (const file of files) {
-    if (applied.has(file)) continue;
-    const body = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
-    await db.begin(async (tx) => {
-      await tx.unsafe(body);
+  if (files.every((f) => applied.has(f))) return ran;
+  // Several server instances can boot at once: one applies migrations, the others wait for it.
+  await db.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(727274)`;
+    const done = new Set((await tx`select name from schema_migrations`).map((r) => r.name as string));
+    for (const file of files) {
+      if (done.has(file)) continue;
+      await tx.unsafe(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
       await tx`insert into schema_migrations (name) values (${file})`;
-    });
-    ran.push(file);
-  }
+      ran.push(file);
+    }
+  });
   return ran;
 }
 

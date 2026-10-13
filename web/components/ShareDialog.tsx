@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Code2, Copy, Link2, Lock, Users, X } from "lucide-react";
-import { Button, Dialog, Input, api, cx } from "./ui";
+import { Check, Clock, Code2, Copy, KeyRound, Link2, Lock, Users, X } from "lucide-react";
+import { Button, Dialog, Input, Select, Switch, api, cx } from "./ui";
+import { formatDate } from "@/lib/format";
 import { useToast } from "./Toast";
 import { PRIVACY_LABELS, type Privacy, type Video } from "@/lib/types";
 
@@ -109,6 +110,8 @@ export function ShareDialog({ video, shareUrl, open, onClose, onChange, canEdit 
             ))}
           </div>
 
+          {video.privacy === "link" && <LinkSettings video={video} onChange={onChange} />}
+
           {video.privacy === "private" && (
             <div className="mt-3 rounded-xl bg-surface-2 p-3">
               <p className="mb-2 text-[13px] font-medium text-ink-2">Invite people by email</p>
@@ -154,5 +157,103 @@ export function ShareDialog({ video, shareUrl, open, onClose, onChange, canEdit 
         <p className="mt-2 text-xs text-ink-4">Embeds follow the same access rules: viewers must be signed in on this Recordius.</p>
       )}
     </Dialog>
+  );
+}
+
+const EXPIRY_OPTIONS = [
+  { value: "never", label: "Never" },
+  { value: "1", label: "In 1 day" },
+  { value: "7", label: "In 7 days" },
+  { value: "30", label: "In 30 days" },
+];
+
+/** Password and expiry for "Anyone with the link". Workspace members are never asked for either. */
+function LinkSettings({ video, onChange }: { video: Video; onChange: (patch: Partial<Video>) => void }) {
+  const { toast } = useToast();
+  const [editingPassword, setEditingPassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const expired = video.link.expiresAt !== null && video.link.expiresAt < Date.now();
+
+  async function save(patch: { linkPassword?: string | null; linkExpiresAt?: number | null }, done: string, local: Partial<Video["link"]>) {
+    setBusy(true);
+    try {
+      await api(`/api/videos/${video.id}`, { method: "PATCH", json: patch });
+      onChange({ link: { ...video.link, ...local } });
+      toast(done);
+      return true;
+    } catch (err) {
+      toast((err as Error).message, "error");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-line-2">
+      <div className="flex items-center gap-3 px-3.5 py-3">
+        <KeyRound className="size-4 shrink-0 text-ink-3" />
+        <span className="flex-1">
+          <span className="block text-sm font-medium">Require a password</span>
+          <span className="block text-[13px] text-ink-3">{video.link.hasPassword ? "People outside your workspace must enter it." : "Anyone with the link can watch."}</span>
+        </span>
+        <Switch
+          label="Require a password"
+          checked={video.link.hasPassword || editingPassword}
+          onChange={async (on) => {
+            if (on) return setEditingPassword(true);
+            setEditingPassword(false);
+            if (video.link.hasPassword) await save({ linkPassword: null }, "Password removed", { hasPassword: false });
+          }}
+        />
+      </div>
+      {(editingPassword || video.link.hasPassword) && (
+        <form
+          className="flex gap-2 border-t border-line px-3.5 py-3"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await save({ linkPassword: password }, video.link.hasPassword ? "Password changed" : "Password set", { hasPassword: true })) {
+              setPassword("");
+              setEditingPassword(false);
+            }
+          }}
+        >
+          <Input type="text" placeholder={video.link.hasPassword ? "New password" : "Choose a password"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" minLength={4} />
+          <Button type="submit" variant="secondary" loading={busy} disabled={password.length < 4}>
+            {video.link.hasPassword ? "Change" : "Set"}
+          </Button>
+        </form>
+      )}
+      <div className="flex items-center gap-3 border-t border-line px-3.5 py-3">
+        <Clock className="size-4 shrink-0 text-ink-3" />
+        <span className="flex-1">
+          <span className="block text-sm font-medium">Link expires</span>
+          <span className={cx("block text-[13px]", expired ? "text-danger" : "text-ink-3")}>
+            {video.link.expiresAt ? (expired ? `Expired on ${formatDate(video.link.expiresAt)}` : `Stops working on ${formatDate(video.link.expiresAt)}`) : "The link keeps working."}
+          </span>
+        </span>
+        <Select
+          className="h-9 w-36"
+          value=""
+          disabled={busy}
+          onChange={async (e) => {
+            const v = e.target.value;
+            if (!v) return;
+            const at = v === "never" ? null : Date.now() + Number(v) * 86400e3;
+            await save({ linkExpiresAt: at }, at ? `Link expires on ${formatDate(at)}` : "Link no longer expires", { expiresAt: at });
+          }}
+        >
+          <option value="" disabled>
+            {video.link.expiresAt ? "Change…" : "Never"}
+          </option>
+          {EXPIRY_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+      </div>
+    </div>
   );
 }

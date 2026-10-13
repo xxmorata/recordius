@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Check, Clock, Download, Eye, Link2, MoreHorizontal, Pencil, Share2, Trash2 } from "lucide-react";
-import { Player } from "@/components/Player";
+import { Archive, ArchiveRestore, Check, Clock, Download, Eye, ImageIcon, Link2, MoreHorizontal, Pencil, Scissors, Share2, Trash2 } from "lucide-react";
+import { Player, type PlayerHandle } from "@/components/Player";
+import { TrimEditor } from "@/components/TrimEditor";
+import { ViewersDialog } from "@/components/ViewersDialog";
+import { useWatchReporting } from "@/components/useWatchReporting";
 import { PrivacyIcon, ShareDialog } from "@/components/ShareDialog";
 import { RenameDialog } from "@/components/LibraryView";
 import { Avatar, Button, Dialog, Menu, api } from "@/components/ui";
@@ -24,9 +27,12 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [copied, setCopied] = useState<"link" | "time" | null>(null);
   const [startAt, setStartAt] = useState<number | null>(null);
-  const counted = useRef(false);
+  const [trimming, setTrimming] = useState(false);
+  const [showViewers, setShowViewers] = useState(false);
+  const player = useRef<PlayerHandle>(null);
   const canEdit = access === "owner";
   const own = video.owner.id === viewerId;
+  const watch = useWatchReporting(video.id, access !== "owner");
 
   useEffect(() => {
     setStartAt(parseStartTime(new URLSearchParams(window.location.search).get("t")));
@@ -58,6 +64,30 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
     setTimeout(() => setCopied(null), 1500);
   }
 
+  async function saveTrim(trim: { startMs: number; endMs: number } | null) {
+    try {
+      await api(`/api/videos/${video.id}`, { method: "PATCH", json: { trim } });
+      setVideo((v) => ({ ...v, trim, durationMs: trim ? trim.endMs - trim.startMs : v.originalDurationMs }));
+      setTrimming(false);
+      toast(trim ? "Trim saved — viewers now see the shorter version" : "Trim removed");
+    } catch (err) {
+      toast((err as Error).message, "error");
+    }
+  }
+
+  async function useFrameAsThumbnail() {
+    try {
+      const jpeg = await player.current!.captureFrame();
+      const form = new FormData();
+      form.set("file", new File([jpeg], "thumb.jpg", { type: "image/jpeg" }));
+      const r = await api<{ thumbUrl: string }>(`/api/videos/${video.id}/thumbnail`, { method: "POST", body: form });
+      setVideo((v) => ({ ...v, thumbUrl: r.thumbUrl }));
+      toast("Thumbnail updated");
+    } catch (err) {
+      toast((err as Error).message, "error");
+    }
+  }
+
   async function update(patch: { title?: string; privacy?: Video["privacy"]; archived?: boolean }, done: string) {
     try {
       await api(`/api/videos/${video.id}`, { method: "PATCH", json: patch });
@@ -79,23 +109,33 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
 
   return (
     <div className="mx-auto flex w-full max-w-[min(100%,calc((100dvh-250px)*16/9))] flex-col gap-5">
-      {video.status === "ready" && video.videoUrl ? (
-        <Player
-          key={video.videoUrl}
+      {video.status === "ready" && video.videoUrl && trimming && video.originalDurationMs ? (
+        <TrimEditor
           src={video.videoUrl}
           poster={video.thumbUrl}
+          totalMs={video.originalDurationMs}
+          initial={video.trim}
+          onCancel={() => setTrimming(false)}
+          onSave={saveTrim}
+        />
+      ) : video.status === "ready" && video.videoUrl ? (
+        <Player
+          ref={player}
+          key={`${video.videoUrl}`}
+          src={video.videoUrl}
+          poster={video.thumbUrl}
+          trim={video.trim}
           startAt={startAt}
           autoPlay={!own}
-          onTime={(s) => setPosition(Math.floor(s))}
-          onFirstPlay={() => {
-            if (counted.current || own) return;
-            counted.current = true;
-            fetch(`/api/videos/${video.id}/view`, { method: "post" }).catch(() => {});
+          onTime={(s) => {
+            setPosition(Math.floor(s));
+            watch.onTime(s);
           }}
+          onFirstPlay={watch.onFirstPlay}
           className="shadow-[0_20px_60px_-20px_rgba(25,28,38,0.45)]"
         />
       ) : (
-        <Processing status={video.status} thumbUrl={video.thumbUrl} />
+        <Processing status={video.status} source={video.source} thumbUrl={video.thumbUrl} />
       )}
 
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -121,9 +161,15 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
                   </>
                 )}
                 <span aria-hidden>·</span>
-                <span className="inline-flex items-center gap-1">
-                  <Eye className="size-3.5" /> {pluralize(video.views, "view")}
-                </span>
+                {canEdit ? (
+                  <button type="button" onClick={() => setShowViewers(true)} className="inline-flex items-center gap-1 rounded-md px-1 hover:bg-surface-2 hover:text-ink" title="See who watched">
+                    <Eye className="size-3.5" /> {pluralize(video.views, "view")}
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1">
+                    <Eye className="size-3.5" /> {pluralize(video.views, "view")}
+                  </span>
+                )}
                 {canEdit && (
                   <>
                     <span aria-hidden>·</span>
@@ -158,6 +204,13 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
                 ? ([
                     "separator",
                     { label: "Rename", icon: <Pencil />, onSelect: () => setRenaming(true) },
+                    ...(video.status === "ready" && video.originalDurationMs
+                      ? [
+                          { label: video.trim ? "Edit trim" : "Trim video", icon: <Scissors />, onSelect: () => setTrimming(true) },
+                          { label: "Use this frame as thumbnail", icon: <ImageIcon />, onSelect: useFrameAsThumbnail, disabled: trimming },
+                        ]
+                      : []),
+                    { label: "Viewers", icon: <Eye />, onSelect: () => setShowViewers(true) },
                     video.archived
                       ? { label: "Restore from archive", icon: <ArchiveRestore />, onSelect: () => update({ archived: false }, "Video restored") }
                       : { label: "Move to archive", icon: <Archive />, onSelect: () => update({ archived: true }, "Moved to archive") },
@@ -185,6 +238,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
         </div>
       )}
 
+      {showViewers && <ViewersDialog videoId={video.id} onClose={() => setShowViewers(false)} />}
       {sharing && <ShareDialog video={video} shareUrl={shareUrl} open onClose={() => setSharing(false)} onChange={(p) => setVideo((v) => ({ ...v, ...p }))} canEdit={canEdit} />}
       {renaming && (
         <RenameDialog
@@ -211,7 +265,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
   );
 }
 
-function Processing({ status, thumbUrl }: { status: Video["status"]; thumbUrl: string | null }) {
+function Processing({ status, source, thumbUrl }: { status: Video["status"]; source: Video["source"]; thumbUrl: string | null }) {
   return (
     <div className="relative aspect-video w-full overflow-hidden rounded-2xl bg-ink shadow-[0_20px_60px_-20px_rgba(25,28,38,0.45)]">
       {thumbUrl && (
@@ -223,7 +277,9 @@ function Processing({ status, thumbUrl }: { status: Video["status"]; thumbUrl: s
           {status === "failed" ? (
             <>
               <p className="text-lg font-medium">This upload didn’t finish</p>
-              <p className="max-w-xs text-sm text-white/70">The recording was saved on the owner’s Mac. They can re-upload it from the Recordius menu.</p>
+              <p className="max-w-xs text-sm text-white/70">
+                {source === "upload" ? "The file didn’t finish uploading. The owner can upload it again from their library." : "The recording was saved on the owner’s Mac. They can re-upload it from the Recordius menu."}
+              </p>
             </>
           ) : (
             <>
@@ -231,7 +287,7 @@ function Processing({ status, thumbUrl }: { status: Video["status"]; thumbUrl: s
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand opacity-75" />
                 <span className="relative inline-flex size-4 rounded-full bg-brand" />
               </span>
-              <p className="text-lg font-medium">Recording in progress</p>
+              <p className="text-lg font-medium">{source === "upload" ? "Uploading…" : "Recording in progress"}</p>
               <p className="max-w-xs text-sm text-white/70">This page updates by itself — the video starts as soon as it has finished uploading.</p>
             </>
           )}

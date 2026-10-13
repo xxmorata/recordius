@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import { Archive, ArchiveRestore, Download, Eye, Link2, MoreHorizontal, Pencil, Play, Search, Share2, Trash2, Video as VideoIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { DropZone, useUploads } from "./Uploads";
+import { Archive, ArchiveRestore, Download, Eye, KeyRound, Upload, Link2, MoreHorizontal, Pencil, Play, Search, Share2, Trash2, Video as VideoIcon } from "lucide-react";
 import { Avatar, Button, Dialog, EmptyState, Input, Menu, api, cx } from "./ui";
 import { useToast } from "./Toast";
 import { PrivacyIcon, ShareDialog } from "./ShareDialog";
@@ -26,6 +27,8 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
   const [sharing, setSharing] = useState<Video | null>(null);
   const [renaming, setRenaming] = useState<Video | null>(null);
   const [deleting, setDeleting] = useState<Video | null>(null);
+  const { upload } = useUploads();
+  const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => setVideos(initial), [initial]);
 
@@ -80,15 +83,32 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
 
   return (
     <>
+      <DropZone />
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-[13px] font-medium text-ink-3">Library</p>
           <h1 className="text-[26px] font-semibold tracking-tight">{meta.title}</h1>
           <p className="mt-1 text-sm text-ink-3">{meta.blurb}</p>
         </div>
-        <Link href="/download">
-          <Button icon={<VideoIcon className="size-4" />}>New video</Button>
-        </Link>
+        <div className="flex gap-2">
+          <input
+            ref={fileInput}
+            type="file"
+            accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) upload(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <Button variant="secondary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()} title="Or drop video files anywhere on this page">
+            Upload
+          </Button>
+          <Link href="/download">
+            <Button icon={<VideoIcon className="size-4" />}>New video</Button>
+          </Link>
+        </div>
       </div>
 
       <div className="mb-5 flex items-center justify-between gap-3">
@@ -106,7 +126,7 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
           <EmptyState
             icon={<VideoIcon />}
             title="Record your first video"
-            text="Install Recordius for Mac, press ⌘⇧R, and the link is on your clipboard the moment you stop."
+            text="Install Recordius for Mac and press ⌘⇧R — the link is on your clipboard the moment you stop. Or drop an existing video file here."
             action={
               <Link href="/download">
                 <Button>Get the desktop app</Button>
@@ -168,6 +188,8 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
                       </span>
                       <span aria-hidden>·</span>
                       <PrivacyIcon privacy={v.privacy} className="inline-block size-3.5" />
+                      {v.privacy === "link" && v.link.hasPassword && <KeyRound className="size-3.5" aria-label="Password protected" />}
+                      {v.privacy === "link" && v.link.expiresAt !== null && v.link.expiresAt < Date.now() && <span className="text-danger">Link expired</span>}
                     </p>
                   </div>
                   <Menu

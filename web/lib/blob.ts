@@ -24,6 +24,9 @@ export function videoPath(id: string, secret: string, ext: string) {
 export function thumbPath(id: string, secret: string) {
   return `videos/${id}/${secret}/thumb.jpg`;
 }
+export function customThumbPath(id: string, secret: string, nonce: string) {
+  return `videos/${id}/${secret}/thumb-${nonce}.jpg`;
+}
 export function avatarPath(userId: string, nonce: string) {
   return `avatars/${userId}/${nonce}.jpg`;
 }
@@ -108,4 +111,8 @@ export async function deletePrefix(prefix: string) {
 export async function fileExists(pathname: string): Promise<boolean> {
   const page = await list({ prefix: pathname, limit: 1, token: rwToken() });
   return page.blobs.some((b) => b.pathname === pathname);
+}
+
+export async function deleteFile(pathname: string) {
+  await del(pathname, { token: rwToken() });
 }

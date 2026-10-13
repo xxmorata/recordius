@@ -1,5 +1,5 @@
 import { currentUser, readJson, requireUser, route } from "@/lib/auth";
-import { deleteVideo, getVideoFor, updateVideo, type Privacy } from "@/lib/videos";
+import { deleteVideo, getVideoFor, updateVideo, type VideoPatch } from "@/lib/videos";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -11,7 +11,7 @@ export const GET = route(async (_req: Request, { params }: Ctx) => {
 
 export const PATCH = route(async (req: Request, { params }: Ctx) => {
   const user = await requireUser();
-  const body = await readJson<{ title?: string; privacy?: Privacy; archived?: boolean }>(req);
+  const body = await readJson<VideoPatch>(req);
   await updateVideo((await params).id, user, body);
   return Response.json({ ok: true });
 });

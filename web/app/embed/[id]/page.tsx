@@ -3,7 +3,8 @@ import Link from "next/link";
 import { EmbedPlayer } from "./EmbedPlayer";
 import { HttpError, currentUser } from "@/lib/auth";
 import { appUrl } from "@/lib/env";
-import { getVideoFor } from "@/lib/videos";
+import { LinkLockedError, getVideoFor } from "@/lib/videos";
+import { LinkGate } from "@/components/LinkGate";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -26,6 +27,13 @@ export default async function EmbedPage({ params }: Props) {
     const { video } = await getVideoFor(id, await currentUser());
     return <EmbedPlayer initial={video} shareUrl={`${appUrl()}/share/${id}`} />;
   } catch (err) {
+    if (err instanceof LinkLockedError) {
+      return (
+        <div className="fixed inset-0 grid place-items-center bg-surface p-6">
+          <LinkGate videoId={id} reason={err.reason} compact />
+        </div>
+      );
+    }
     const needsLogin = err instanceof HttpError && err.status === 401;
     return (
       <div className="fixed inset-0 grid place-items-center bg-ink p-6 text-center text-white">

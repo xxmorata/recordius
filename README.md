@@ -31,9 +31,13 @@
 
 - **Instant links** — the share URL exists before the first frame; stopping just flushes the last few seconds.
 - **Screen + camera bubble, screen only, or camera only**, any display or a single window, mic, optional system audio.
-- **Privacy per video**: anyone with the link · workspace members only · only you and people you invite by email.
+- **Privacy per video**: anyone with the link · workspace members only · only you and people you invite by email. Links can have a **password** and an **expiry date** — share privately with clients who don't have an account.
+- **Trim** the start and end of any video in the browser — instant, nothing is re-encoded, and you can undo it anytime.
+- **Upload existing videos**: drop MP4/MOV/WebM files on the library and they get a share link like any recording.
+- **Viewer insights**: see which teammates watched and how far they got; anonymous viewers are counted too.
+- **Custom thumbnails**: pick any frame of the video as its preview image.
 - **Workspaces & invites** — the first person to open the site becomes the owner; teammates join through invite links. Roles: owner, admin, member.
-- **Library**: search, rename, archive, delete, view counts, "Workspace" tab for videos shared by teammates.
+- **Library**: search, rename, archive, delete, view counts, "Workspace" tab for videos shared by teammates. The Mac app also lists your latest videos with a one-click *Copy link*.
 - **Player**: speed control, keyboard shortcuts, picture-in-picture, fullscreen, link-at-timestamp (`?t=1m23s`), embed code.
 - **Private storage** — files sit in a private Vercel Blob store; viewers get short-lived signed URLs only after the access check.
 - **Updates that keep permissions** — the Mac app is signed with a stable certificate and updates itself; macOS never asks for Screen Recording access twice.

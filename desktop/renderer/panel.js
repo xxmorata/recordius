@@ -225,6 +225,74 @@ async function startMeter() {
   }
 }
 
+// ───────── recent recordings ─────────
+
+function ago(ts) {
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+function dur(ms) {
+  if (ms == null) return "";
+  const t = Math.round(ms / 1000);
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+}
+
+let recentTimer = null;
+async function loadRecent() {
+  clearTimeout(recentTimer);
+  let items = [];
+  try {
+    items = await api.invoke("panel:recent");
+  } catch {
+    $("recent").hidden = true;
+    return;
+  }
+  $("recent").hidden = !items.length;
+  $("recentList").replaceChildren(
+    ...items.map((v) => {
+      const row = document.createElement("div");
+      row.className = "recent-item";
+      row.setAttribute("role", "button");
+      row.tabIndex = 0;
+      row.title = "Open in browser";
+      const thumb = document.createElement("span");
+      thumb.className = "rthumb";
+      if (v.thumbUrl) thumb.style.backgroundImage = `url("${v.thumbUrl}")`;
+      const meta = document.createElement("span");
+      meta.className = "rmeta";
+      const title = document.createElement("b");
+      title.textContent = v.title;
+      const sub = document.createElement("small");
+      sub.textContent = v.status === "ready" ? `${dur(v.durationMs)} · ${ago(v.createdAt)}` : v.status === "failed" ? "Upload failed" : "Uploading…";
+      meta.append(title, sub);
+      const copy = document.createElement("button");
+      copy.className = "copy";
+      copy.textContent = "Copy link";
+      copy.onclick = async (e) => {
+        e.stopPropagation();
+        await api.invoke("panel:copy", v.shareUrl);
+        copy.textContent = "Copied";
+        copy.classList.add("done");
+        setTimeout(() => {
+          copy.textContent = "Copy link";
+          copy.classList.remove("done");
+        }, 1400);
+      };
+      row.append(thumb, meta, copy);
+      const open = () => api.send("panel:open-url", v.shareUrl);
+      row.onclick = open;
+      row.onkeydown = (e) => e.key === "Enter" && open();
+      return row;
+    }),
+  );
+  // Keep "Uploading…" rows fresh while the panel is open.
+  if (items.some((v) => v.status === "recording") && !document.hidden) recentTimer = setTimeout(loadRecent, 3000);
+}
+api.on("panel:recent-changed", () => loadRecent());
+
 // ───────── settings view ─────────
 
 function fillSettings() {
@@ -375,6 +443,7 @@ api.on("panel:visibility", (visible) => {
         loadSources().catch(() => {});
         startMeter();
         updateCameraPreview(true);
+        loadRecent();
       }
     }
   } else {
@@ -413,6 +482,7 @@ function warmUp() {
     warmed = true;
     render();
     startMeter();
+    loadRecent();
   })().finally(() => (warming = null));
   return warming;
 }

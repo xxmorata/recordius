@@ -84,7 +84,7 @@ Web app → **Settings → Members & workspace → Create invite link**. Send it
 
 ## Updating
 
-- **Web app on Vercel:** on GitHub, open your fork and click **Sync fork** (or merge `upstream/main`). Vercel redeploys automatically. New database migrations run on the next visit of `/setup` for empty databases; for a live database run `npm run db:migrate` with the production `DATABASE_URL` (see [docs/self-hosting.md](docs/self-hosting.md#updating-recordius)).
+- **Web app on Vercel:** on GitHub, open your fork and click **Sync fork** (or merge `upstream/main`). Vercel redeploys automatically and the database schema is updated on start — nothing else to do.
 - **Mac app:** Settings → **Check for updates** inside the app. Updates install without asking for macOS permissions again.
 
 ## Something went wrong?

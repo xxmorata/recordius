@@ -36,5 +36,6 @@ module.exports = {
   completeVideo: (id, durationMs, size) => call("POST", `/api/videos/${id}/complete`, { durationMs, size }),
   markThumbnail: (id) => call("POST", `/api/videos/${id}/thumbnail`),
   deleteVideo: (id) => call("DELETE", `/api/videos/${id}`),
+  recent: (limit = 4) => call("GET", `/api/videos?scope=mine&limit=${limit}`),
   serverUrl: () => config.load().server?.replace(/\/$/, "") ?? null,
 };
