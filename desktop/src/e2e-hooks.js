@@ -43,6 +43,14 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
 
   const runUi = async () => {
     const js = (code) => win.panel.webContents.executeJavaScript(code);
+    // Clicks by selector and names the selector when the element isn't there.
+    const click = async (selector) => {
+      const found = await js(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) el.click(); return Boolean(el); })()`);
+      if (!found) {
+        const state = await js(`JSON.stringify({ view: document.body.dataset.view, warmed, warming: Boolean(warming), media: init && init.media, cameras: devices.cameras.length, mics: devices.mics.length })`);
+        throw new Error(`panel element not found: ${selector} ${state}`);
+      }
+    };
     const camVisible = () => Boolean(win.camera && !win.camera.isDestroyed() && win.camera.isVisible());
     const r = {};
     showPanel();
@@ -51,32 +59,34 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
     r.view = await js(`document.body.dataset.view`);
     r.panelShot = await shot(win.panel, "panel");
     // open each row (accordion) and screenshot
-    await js(`document.querySelector('[data-row="source"] .row-head').click()`);
+    await click('[data-row="source"] .row-head');
     await wait(900);
     r.sourceOpen = await shot(win.panel, "panel-source-open");
     r.screenCount = await js(`document.querySelectorAll('[data-screen]').length`);
     r.windowCount = await js(`document.querySelectorAll('[data-window]').length`);
-    await js(`document.querySelector('[data-row="source"] .row-head').click()`);
-    await js(`document.querySelector('[data-row="camera"] .row-head').click()`);
+    await click('[data-row="source"] .row-head');
+    // The device list appears once macOS has answered the camera/mic permission question.
+    for (let t = 0; t < 150 && !(await js(`Boolean(document.querySelector('[data-camera]'))`)); t++) await wait(200);
+    await click('[data-row="camera"] .row-head');
     await wait(600);
     r.cameraOpen = await shot(win.panel, "panel-camera-open");
     r.cameraCount = await js(`document.querySelectorAll('[data-camera]').length`);
     r.cameraVisibleWhileIdle = camVisible();
-    await js(`document.querySelector('[data-camera="none"]').click()`);
+    await click('[data-camera="none"]');
     r.cameraHiddenAfterOff = await until(() => !camVisible(), 3000);
-    await js(`document.querySelector('[data-camera]:not([data-camera="none"])').click()`);
+    await click('[data-camera]:not([data-camera="none"])');
     r.cameraShownAgainMs = await until(camVisible, 8000);
-    await js(`document.querySelector('[data-row="camera"] .row-head').click()`);
-    await js(`document.querySelector('[data-row="mic"] .row-head').click()`);
+    await click('[data-row="camera"] .row-head');
+    await click('[data-row="mic"] .row-head');
     await wait(600);
     r.micOpen = await shot(win.panel, "panel-mic-open");
     r.micCount = await js(`document.querySelectorAll('[data-mic]').length`);
-    await js(`document.querySelector('[data-row="mic"] .row-head').click()`);
-    await js(`document.getElementById('openSettings').click()`);
+    await click('[data-row="mic"] .row-head');
+    await click('#openSettings');
     await wait(500);
     r.settingsShot = await shot(win.panel, "panel-settings");
     r.settingsView = await js(`document.body.dataset.view`);
-    await js(`document.getElementById('settingsBack').click()`);
+    await click('#settingsBack');
     await wait(300);
     r.startEnabled = await js(`!document.getElementById('start').disabled`);
     r.recentCount = await js(`document.querySelectorAll('.recent-item').length`);

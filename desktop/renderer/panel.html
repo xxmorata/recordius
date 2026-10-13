@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: https: http://localhost:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline'" />
     <title>Recordius</title>
     <link rel="stylesheet" href="styles.css" />
     <style>
@@ -166,7 +166,7 @@
 
         <div class="content">
           <div class="banner" id="screenPerm" hidden>
-            <span><b>Screen recording is off</b>Turn on Recordius in System Settings — the app restarts itself.</span>
+            <span id="screenPermText"><b>Screen recording is off</b>Turn on Recordius in System Settings — the app restarts itself.</span>
             <span class="actions"><button id="grantScreen">Open Settings</button><button id="relaunch" class="ghost">Relaunch</button></span>
           </div>
 

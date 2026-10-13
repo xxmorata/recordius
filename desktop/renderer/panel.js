@@ -96,11 +96,25 @@ for (const name of ["source", "camera", "mic"]) document.querySelector(`[data-ro
 
 // ───────── sources ─────────
 
+// "screen-permission": Recordius isn't allowed yet (macOS needs a restart of the app once it is).
+// "screen-blocked": allowed, but macOS isn't handing out the screen right now — usually a pending
+// system question, or a permission entry that needs to be switched off and on again.
+let screenIssue = null;
+function showScreenIssue(error) {
+  screenIssue = error ? (error === "screen-blocked" ? "screen-blocked" : "screen-permission") : null;
+  $("screenPerm").hidden = !screenIssue;
+  if (!screenIssue) return;
+  $("screenPermText").innerHTML =
+    screenIssue === "screen-blocked"
+      ? "<b>macOS isn’t sharing your screen yet</b>Look for a macOS prompt asking to allow Recordius, or switch Recordius off and on in System Settings → Screen &amp; System Audio Recording."
+      : "<b>Screen recording is off</b>Turn on Recordius in System Settings — the app restarts itself.";
+}
+
 async function loadSources(force = false) {
   if (!force && Date.now() - sourcesLoadedAt < 3000) return;
   const res = await api.invoke("panel:sources");
   sourcesLoadedAt = Date.now();
-  $("screenPerm").hidden = !res.error;
+  showScreenIssue(res.error);
   sources = { screens: res.screens, windows: res.windows };
   const box = $("screens");
   box.classList.toggle("multi", res.screens.length > 1);
@@ -154,7 +168,8 @@ $("cameraOnly").onclick = () => {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
 
 async function loadDevices(media) {
-  let list = await navigator.mediaDevices.enumerateDevices();
+  // While a macOS camera/mic question is unanswered the device list can stall; show what we have instead.
+  let list = await withTimeout(navigator.mediaDevices.enumerateDevices(), 4000).catch(() => []);
   const unlabeled = (kind) => list.some((d) => d.kind === kind && !d.label);
   const audio = media.microphone === "granted" && unlabeled("audioinput");
   const video = media.camera === "granted" && unlabeled("videoinput");
@@ -162,7 +177,7 @@ async function loadDevices(media) {
     try {
       const s = await withTimeout(navigator.mediaDevices.getUserMedia({ audio, video }), 4000);
       s.getTracks().forEach((t) => t.stop());
-      list = await navigator.mediaDevices.enumerateDevices();
+      list = await withTimeout(navigator.mediaDevices.enumerateDevices(), 4000).catch(() => list);
     } catch {}
   }
   devices = {
@@ -469,7 +484,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && document.body.dataset.view === "recorder" && !$("start").disabled && !["INPUT", "TEXTAREA"].includes(e.target.tagName)) $("start").click();
 });
 api.on("panel:navigate", (view) => setView(view));
+let shownBeforeBoot = false; // the panel can be shown while boot() is still loading
 api.on("panel:visibility", (visible) => {
+  if (!init) {
+    shownBeforeBoot = visible;
+    return;
+  }
   if (visible) {
     if (document.body.dataset.view === "recorder") {
       if (!warmed) warmUp();
@@ -490,9 +510,9 @@ new ResizeObserver(() => api.send("panel:resize", Math.ceil(document.body.scroll
 
 // macOS applies a new Screen Recording permission only after a restart: watch for it and relaunch.
 setInterval(async () => {
-  if ($("screenPerm").hidden) return;
+  if ($("screenPerm").hidden || screenIssue !== "screen-permission") return; // "blocked" is already granted: no restart loop
   if ((await api.invoke("media:status")) === "granted") {
-    $("screenPerm").querySelector("span").innerHTML = "<b>Permission granted.</b> Restarting Recordius…";
+    $("screenPermText").innerHTML = "<b>Permission granted.</b> Restarting Recordius…";
     setTimeout(() => api.send("panel:relaunch"), 800);
   }
 }, 1500);
@@ -504,12 +524,16 @@ let warming = null;
 function warmUp() {
   if (warming) return warming;
   warming = (async () => {
-    $("screenPerm").hidden = init.media.screen === "granted";
+    showScreenIssue(init.media.screen === "granted" ? null : "screen-permission");
     render();
     loadSources(true).catch(() => {});
     const media = { ...init.media };
     for (const kind of ["camera", "microphone"]) {
-      if (media[kind] === "not-determined") media[kind] = (await api.invoke("media:request", kind)) ? "granted" : "denied";
+      // Ask once; but if the macOS prompt is left unanswered, list the devices anyway instead of waiting forever.
+      if (media[kind] === "not-determined") {
+        const answer = await Promise.race([api.invoke("media:request", kind), new Promise((r) => setTimeout(() => r(null), 10000))]);
+        if (answer !== null) media[kind] = answer ? "granted" : "denied";
+      }
     }
     init.media = media;
     await loadDevices(media).catch(() => {});
@@ -532,5 +556,7 @@ async function boot() {
   setView("recorder");
   render();
   renderPending(init.pendingUploads);
+  // Opened right at launch: the "shown" signal came before we were ready, so warm up now.
+  if (shownBeforeBoot || init.visible) warmUp();
 }
 boot();

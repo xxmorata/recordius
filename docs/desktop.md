@@ -82,6 +82,7 @@ Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubb
 
 - **"Screen recording is off" stays on after enabling it** — click *Relaunch* in the panel, or quit and reopen the app. If System Settings lists two "Recordius" entries, remove the stale one (−) and toggle the remaining one.
 - **No windows in the picker** — the window list appears only after Screen Recording is allowed.
+- **"macOS isn't sharing your screen yet"** — Recordius is allowed, but macOS is holding the screen back. Usually a macOS prompt is waiting for you ("… would like to record this screen", or the monthly "continue to allow?" question). If there's none, open *System Settings → Privacy & Security → Screen & System Audio Recording*, switch Recordius off and on, then click *Relaunch*.
 - **The browser didn't open the app** — use *Paste a connection code instead*.
 - **"Connect Recordius to …?"** — the app shows this when a connect link didn't come from the app's own *Continue in browser* step (for example after you signed in again in between). Check that the address is your Recordius server, then click *Connect*. Never connect to an address you don't recognise.
 - **"Enter your workspace address" / can't connect** — the server must use `https://` (only `http://localhost` is allowed without it).

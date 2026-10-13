@@ -116,6 +116,8 @@ Schema migrations run automatically every time the app starts.
 
 Choose with `STORAGE` (or leave it out: the provider is picked from whichever settings are present — `S3_BUCKET`, then `BLOB_READ_WRITE_TOKEN`, otherwise local disk).
 
+With S3 or local storage, teammates need the Mac app **1.0.7 or newer** (it updates itself; older versions only upload to Vercel Blob).
+
 Whatever you choose, **files are never public**: the app hands out short-lived signed links (6 hours to watch, 12 hours to upload) only after checking that the person may see the video. Uploads are tied to one video and can't touch any other file.
 
 ### Local disk — `STORAGE=local`

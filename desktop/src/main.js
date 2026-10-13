@@ -147,6 +147,10 @@ function showPanel(view) {
       w.show();
     }
     w.focus();
+    // Electron doesn't reliably emit "show" for this pre-created window, and "focus" only fires when the
+    // app is frontmost — tell the panel directly, so it always loads screens and devices when it opens.
+    panelShowStamp = Date.now();
+    w.webContents.send("panel:visibility", true);
     if (view) w.webContents.send("panel:navigate", view);
   };
   if (w.webContents.isLoading()) w.once("ready-to-show", reveal);
@@ -727,6 +731,7 @@ ipcMain.handle("panel:init", async () => ({
   packaged: app.isPackaged,
   loginItem: app.isPackaged ? app.getLoginItemSettings().openAtLogin : false,
   state,
+  visible: Boolean(win.panel && !win.panel.isDestroyed() && win.panel.isVisible()),
   pendingUploads: failedUploads().length,
   shortcuts: { toggle: "⌘⇧R", pause: "⌘⇧P" },
 }));
@@ -743,13 +748,21 @@ ipcMain.handle("panel:sources", async () => {
   let screens, windows;
   try {
     // 560 px is plenty for a 300 px-wide card on a Retina panel and is noticeably faster to grab.
-    [screens, windows] = await Promise.all([
-      desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 560, height: 350 } }),
-      desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 1, height: 1 }, fetchWindowIcons: true }),
-    ]);
+    // macOS can hold capture back even with the permission on (e.g. while its periodic "allow Recordius
+    // to keep recording your screen?" question is waiting): never let the panel wait forever.
+    let timer;
+    const timeout = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("screen-blocked")), 8000)));
+    [screens, windows] = await Promise.race([
+      Promise.all([
+        desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 560, height: 350 } }),
+        desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 1, height: 1 }, fetchWindowIcons: true }),
+      ]),
+      timeout,
+    ]).finally(() => clearTimeout(timer));
   } catch (err) {
-    return { screens: [], windows: [], error: err.message };
+    return { screens: [], windows: [], error: err.message === "screen-blocked" ? "screen-blocked" : err.message };
   }
+  if (!screens.length) return { screens: [], windows: [], error: "screen-blocked" };
   lastSources = [...screens, ...windows];
   const displays = screen.getAllDisplays();
   const ownTitles = new Set(BrowserWindow.getAllWindows().map((w) => w.getTitle()));
