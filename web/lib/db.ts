@@ -19,6 +19,8 @@ export function sql(): Sql {
       // Works with transaction-mode poolers (Neon, Supabase, PgBouncer).
       prepare: false,
       transform: { undefined: null },
+      // Postgres NOTICEs ("relation already exists, skipping") are informational; keep logs clean.
+      onnotice: () => {},
     });
   }
   return globalThis.__recordiusSql;
@@ -29,14 +31,19 @@ const MIGRATIONS_DIR = join(process.cwd(), "db", "migrations");
 /** Applies db/migrations/*.sql in order; safe to call repeatedly. */
 export async function migrate(): Promise<string[]> {
   const db = sql();
-  await db`create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())`;
-  const applied = new Set((await db`select name from schema_migrations`).map((r) => r.name as string));
   const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
   const ran: string[] = [];
-  if (files.every((f) => applied.has(f))) return ran;
-  // Several server instances can boot at once: one applies migrations, the others wait for it.
+  // Fast path: nothing to do (no lock, no writes).
+  const ready = await db`select to_regclass('public.schema_migrations') as t`;
+  if (ready[0]?.t) {
+    const applied = new Set((await db`select name from schema_migrations`).map((r) => r.name as string));
+    if (files.every((f) => applied.has(f))) return ran;
+  }
+  // Several server instances can boot at once: one applies migrations, the others wait for it. Even the
+  // bookkeeping table is created under the lock (concurrent CREATE TABLE IF NOT EXISTS can fail in Postgres).
   await db.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(727274)`;
+    await tx`create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())`;
     const done = new Set((await tx`select name from schema_migrations`).map((r) => r.name as string));
     for (const file of files) {
       if (done.has(file)) continue;
