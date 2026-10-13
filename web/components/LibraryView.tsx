@@ -14,7 +14,7 @@ type Props = { initial: Video[]; scope: LibraryScope; origin: string; userId: st
 
 const TITLES: Record<LibraryScope, { title: string; blurb: string }> = {
   mine: { title: "My videos", blurb: "Everything you’ve recorded." },
-  workspace: { title: "Workspace", blurb: "Videos your teammates shared with the workspace, and videos shared with you." },
+  workspace: { title: "Workspace", blurb: "Everything shared with the whole workspace, plus videos shared with you by email." },
   archive: { title: "Archive", blurb: "Archived videos keep their links and can be restored anytime." },
 };
 

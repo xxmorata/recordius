@@ -100,16 +100,20 @@ export async function listVideos(user: CurrentUser, scope: LibraryScope, query =
   // Piggy-back housekeeping on library loads: recordings whose app never finished are marked failed after a day.
   failStaleRecordings().catch(() => {});
   const q = query.trim() ? `%${query.trim().replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
-  const params: string[] = [user.workspace.id, user.id];
+  const params: string[] = [user.workspace.id];
   let where: string;
-  if (scope === "mine") where = `v.workspace_id = $1 and v.owner_id = $2 and v.archived_at is null`;
-  else if (scope === "archive") where = `v.workspace_id = $1 and v.owner_id = $2 and v.archived_at is not null`;
-  else {
-    // Everything shared with the workspace, plus private videos the user was invited to.
+  if (scope === "mine") {
+    params.push(user.id);
+    where = `v.workspace_id = $1 and v.owner_id = $2 and v.archived_at is null`;
+  } else if (scope === "archive") {
+    params.push(user.id);
+    where = `v.workspace_id = $1 and v.owner_id = $2 and v.archived_at is not null`;
+  } else {
+    // "Workspace" is what the team shares (plus private videos the user was invited to) — not a copy of "My videos".
     params.push(user.email);
     where = `v.workspace_id = $1 and v.archived_at is null and (
-      v.owner_id = $2 or v.privacy = 'workspace'
-      or exists (select 1 from video_access a where a.video_id = v.id and a.email = $3)
+      v.privacy = 'workspace'
+      or exists (select 1 from video_access a where a.video_id = v.id and a.email = $2)
     )`;
   }
   if (q) {
@@ -124,7 +128,7 @@ export async function countVideos(user: CurrentUser): Promise<{ mine: number; wo
   const [row] = await sql()`
     select
       count(*) filter (where owner_id = ${user.id} and archived_at is null) as mine,
-      count(*) filter (where archived_at is null and (owner_id = ${user.id} or privacy = 'workspace'
+      count(*) filter (where archived_at is null and (privacy = 'workspace'
         or exists (select 1 from video_access a where a.video_id = videos.id and a.email = ${user.email}))) as workspace,
       count(*) filter (where owner_id = ${user.id} and archived_at is not null) as archive
     from videos where workspace_id = ${user.workspace.id}`;
