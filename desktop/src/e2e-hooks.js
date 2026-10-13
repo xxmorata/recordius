@@ -175,6 +175,15 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
       }
       if (mode === "signin") return await runSignedOut();
       if (mode === "retry") return await runRetry();
+      if (mode === "quit") {
+        // A normal quit (menu, ⌘Q, shutdown) must actually exit, also with the panel created and shown.
+        showPanel();
+        await until(() => win.panel && !win.panel.webContents.isLoading());
+        await wait(800);
+        app.once("will-quit", () => fs.writeFileSync(process.env.RECORDIUS_E2E_OUT || "/dev/stdout", JSON.stringify({ ok: true, quit: "exited" })));
+        setTimeout(() => out({ ok: false, error: "app.quit() was blocked" }), 5000);
+        return app.quit();
+      }
 
       const shots = {};
       const sourceId = mode === "cam" ? null : (await desktopCapturer.getSources({ types: ["screen"] }))[0]?.id;

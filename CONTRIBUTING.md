@@ -35,6 +35,7 @@ A Postgres in Docker, if you need one: `docker run -d --name rcd-pg -e POSTGRES_
 | Desktop: record → upload → ready | `RECORDIUS_E2E=cam:6000 RECORDIUS_E2E_FAKE=1 …` | fake camera/mic; `screen` / `screen-cam` need the Screen Recording permission |
 | Desktop: upload queue & local-copy cleanup | `cd desktop && npm test` | plain Node, no Electron or server needed; runs in CI |
 | Desktop: failed upload → retry | `RECORDIUS_E2E=retry RECORDIUS_E2E_FAKE=1 RECORDIUS_E2E_CONNECT=… npx electron .` | queues a "failed" recording, a deleted one and a missing file, then checks the banner and the retry |
+| Desktop: quitting really quits | `RECORDIUS_E2E=quit …` | fails if any window blocks ⌘Q / shutdown |
 | Desktop: in-app update | `RECORDIUS_E2E=update RECORDIUS_UPDATE_URL=http://127.0.0.1:8787/latest.json …` | serve a fake release JSON + tarball locally |
 
 Results are written as JSON to `RECORDIUS_E2E_OUT`; `RECORDIUS_E2E_SHOTS=<dir>` saves PNGs of every window.

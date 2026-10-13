@@ -58,6 +58,7 @@ let pendingDeepLinks = [];
 // The preview guard therefore combines isVisible() with timestamps of the last hide/show events.
 let panelHideStamp = 0;
 let panelShowStamp = 0;
+let quitting = false; // set on before-quit so windows that normally just hide let the app quit
 
 // ───────────────────────────── windows ─────────────────────────────
 
@@ -103,6 +104,7 @@ function ensurePanelWindow() {
   const w = createWindow("panel", { width: PANEL_WINDOW, height: 560, transparent: true, hasShadow: false, alwaysOnTop: false }, "panel.html");
   placePanel(w);
   w.on("close", (e) => {
+    if (quitting) return; // Quit, ⌘Q, logout and shutdown must be able to close it
     // ⌘W / window close keeps the (hidden) window around so the next open stays instant.
     e.preventDefault();
     hidePanel();
@@ -930,6 +932,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", (e) => e.preventDefault()); // menu-bar app: keep running
+app.on("before-quit", () => (quitting = true));
 app.on("will-quit", () => globalShortcut.unregisterAll());
 
 if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, hostname: os.hostname() });
