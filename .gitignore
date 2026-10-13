@@ -11,5 +11,5 @@ web/next-env.d.ts
 web/tsconfig.tsbuildinfo
 
 # local storage (STORAGE=local) and Docker data
-web/storage/
-storage/
+/web/storage/
+/storage/
