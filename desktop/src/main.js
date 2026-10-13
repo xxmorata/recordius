@@ -50,6 +50,10 @@ let lastSources = [];
 let pendingSourceId = null;
 let pendingSystemAudio = false;
 let pendingDeepLinks = [];
+// macOS emits 'hide'/'show' for occlusion changes too, and isVisible() lags behind hide() for a moment.
+// The preview guard therefore combines isVisible() with timestamps of the last hide/show events.
+let panelHideStamp = 0;
+let panelShowStamp = 0;
 
 // ───────────────────────────── windows ─────────────────────────────
 
@@ -104,8 +108,24 @@ function showPanel(view) {
     w.show();
     w.focus();
   });
-  w.on("show", () => w.webContents.send("panel:visibility", true));
-  w.on("hide", () => w.webContents.send("panel:visibility", false));
+  // The preview bubble belongs to the panel: it goes away when the panel is hidden (⌘H, close) or
+  // simply loses focus (another app in front), and comes back when the panel is focused again.
+  w.on("show", () => {
+    panelShowStamp = Date.now();
+    w.webContents.send("panel:visibility", true);
+  });
+  w.on("focus", () => {
+    panelShowStamp = Date.now();
+    w.webContents.send("panel:visibility", true);
+  });
+  w.on("hide", () => {
+    panelHideStamp = Date.now();
+    w.webContents.send("panel:visibility", false);
+    if (state === "idle") hideCamera();
+  });
+  w.on("blur", () => {
+    if (state === "idle" && !E2E) hideCamera();
+  });
 }
 
 function hidePanel() {
@@ -618,7 +638,12 @@ ipcMain.on("panel:relaunch", () => {
   app.relaunch();
   app.exit(0);
 });
-ipcMain.on("panel:camera-preview", (_e, { enabled, cameraId }) => (enabled ? showCamera(cameraId) : hideCamera()));
+ipcMain.on("panel:camera-preview", (_e, { enabled, cameraId }) => {
+  // A preview request can arrive right after the panel was hidden; never let it resurrect the bubble.
+  const panelShown = Boolean(win.panel && !win.panel.isDestroyed() && win.panel.isVisible()) && (panelShowStamp > panelHideStamp || Date.now() - panelHideStamp > 1500);
+  if (enabled && panelShown && state === "idle") showCamera(cameraId);
+  else if (!enabled) hideCamera();
+});
 ipcMain.on("panel:start", (_e, opts) => startRecording(opts));
 ipcMain.on("panel:settings", (_e, patch) => {
   const allowed = ["source", "sourceId", "cameraId", "micId", "systemAudio", "mirrorCamera", "countdown", "quality", "cameraSize"];
@@ -716,6 +741,7 @@ app.on("open-url", (e, url) => {
 });
 app.on("activate", () => showPanel());
 
+
 app.setAsDefaultProtocolClient("recordius");
 
 app.whenReady().then(async () => {
@@ -776,4 +802,4 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", (e) => e.preventDefault()); // menu-bar app: keep running
 app.on("will-quit", () => globalShortcut.unregisterAll());
 
-if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, connect, win, getState: () => state, getRec: () => rec, hostname: os.hostname() });
+if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, hostname: os.hostname() });

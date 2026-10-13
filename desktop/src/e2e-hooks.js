@@ -20,7 +20,7 @@ async function shot(w, name) {
   return file;
 }
 
-module.exports = ({ startRecording, stopRecording, togglePause, showPanel, connect, win, getState, getRec }) => {
+module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec }) => {
   const [mode, msText] = process.env.RECORDIUS_E2E.split(":");
   const ms = Number(msText) || 6000;
   if (process.env.RECORDIUS_E2E_FAKE) {
@@ -51,13 +51,13 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, conne
     r.view = await js(`document.body.dataset.view`);
     r.panelShot = await shot(win.panel, "panel");
     // open each row (accordion) and screenshot
-    await js(`document.querySelector('[data-row="source"]').click()`);
+    await js(`document.querySelector('[data-row="source"] .row-head').click()`);
     await wait(900);
     r.sourceOpen = await shot(win.panel, "panel-source-open");
     r.screenCount = await js(`document.querySelectorAll('[data-screen]').length`);
     r.windowCount = await js(`document.querySelectorAll('[data-window]').length`);
-    await js(`document.querySelector('[data-row="source"]').click()`);
-    await js(`document.querySelector('[data-row="camera"]').click()`);
+    await js(`document.querySelector('[data-row="source"] .row-head').click()`);
+    await js(`document.querySelector('[data-row="camera"] .row-head').click()`);
     await wait(600);
     r.cameraOpen = await shot(win.panel, "panel-camera-open");
     r.cameraCount = await js(`document.querySelectorAll('[data-camera]').length`);
@@ -66,12 +66,12 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, conne
     r.cameraHiddenAfterOff = await until(() => !camVisible(), 3000);
     await js(`document.querySelector('[data-camera]:not([data-camera="none"])').click()`);
     r.cameraShownAgainMs = await until(camVisible, 8000);
-    await js(`document.querySelector('[data-row="camera"]').click()`);
-    await js(`document.querySelector('[data-row="mic"]').click()`);
+    await js(`document.querySelector('[data-row="camera"] .row-head').click()`);
+    await js(`document.querySelector('[data-row="mic"] .row-head').click()`);
     await wait(600);
     r.micOpen = await shot(win.panel, "panel-mic-open");
     r.micCount = await js(`document.querySelectorAll('[data-mic]').length`);
-    await js(`document.querySelector('[data-row="mic"]').click()`);
+    await js(`document.querySelector('[data-row="mic"] .row-head').click()`);
     await js(`document.getElementById('openSettings').click()`);
     await wait(500);
     r.settingsShot = await shot(win.panel, "panel-settings");
@@ -79,6 +79,12 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, conne
     await js(`document.getElementById('settingsBack').click()`);
     await wait(300);
     r.startEnabled = await js(`!document.getElementById('start').disabled`);
+    r.checksVisible = await js(`[...document.querySelectorAll('.opt .check')].filter((c) => getComputedStyle(c).display !== 'none').length`);
+    await wait(2500); // let any pending source/device loads settle, like a user would
+    hidePanel(); // what Esc / the close button do
+    r.cameraHiddenWithPanel = await until(() => !camVisible(), 3000);
+    await wait(1500);
+    r.cameraStillHidden = !camVisible();
     out({ ok: true, ui: r });
   };
 

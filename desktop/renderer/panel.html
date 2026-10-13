@@ -53,7 +53,8 @@
       .opt img, .opt .dot { width: 18px; height: 18px; border-radius: 5px; flex: none; }
       .opt .dot { border-radius: 50%; background: var(--line-2); width: 8px; height: 8px; margin: 0 5px; }
       .opt span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .opt .check { margin-left: auto; width: 16px; height: 16px; }
+      .opt .check { margin-left: auto; width: 16px; height: 16px; display: none; }
+      .opt[aria-pressed="true"] .check { display: block; }
       .meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin: 8px 8px 2px; }
       .meter span { display: block; height: 100%; width: 0; background: var(--green); transition: width 0.08s linear; }
       .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 4px; font-size: 13px; }

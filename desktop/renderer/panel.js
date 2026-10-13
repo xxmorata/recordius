@@ -73,9 +73,14 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
-function updateCameraPreview() {
+let lastPreview = "";
+function updateCameraPreview(force = false) {
   const enabled = document.body.dataset.view === "recorder" && settings.cameraId !== "none" && (devices.cameras.length > 0 || init?.media.camera === "granted");
-  api.send("panel:camera-preview", { enabled, cameraId: settings.cameraId === "none" ? null : settings.cameraId });
+  const payload = { enabled, cameraId: settings.cameraId === "none" ? null : settings.cameraId };
+  const key = JSON.stringify(payload);
+  if (!force && key === lastPreview) return; // render() runs often; only talk to the main process on change
+  lastPreview = key;
+  api.send("panel:camera-preview", payload);
 }
 
 // ───────── accordion rows ─────────
@@ -361,9 +366,12 @@ api.on("panel:visibility", (visible) => {
     if (document.body.dataset.view === "recorder") {
       loadSources().catch(() => {});
       startMeter();
-      updateCameraPreview();
+      updateCameraPreview(true);
     }
-  } else stopMeter();
+  } else {
+    stopMeter();
+    lastPreview = ""; // the main process hid the bubble; the next render must ask for it again
+  }
 });
 window.addEventListener("focus", () => document.body.dataset.view === "recorder" && loadSources().catch(() => {}));
 new ResizeObserver(() => api.send("panel:resize", Math.ceil(document.body.scrollHeight))).observe(document.body);
