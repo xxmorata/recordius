@@ -192,10 +192,13 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
         handleDeepLink("recordius://record");
         await wait(1500);
         r.recordLinkIgnored = getState() === "idle";
-        const state = startConnect(); // what "Continue in browser" does
+        const state = startConnect(server); // what "Continue in browser" does
+        handleDeepLink(`recordius://connect?server=${encodeURIComponent("https://other.example")}&token=${token}&state=${state}`);
+        await wait(800);
+        r.stateForOtherServerAsks = asked.length === 3 && config.token() === before;
         handleDeepLink(`recordius://connect?server=${encodeURIComponent(server)}&token=${token}&state=${state}`);
         await until(() => config.token() === token, 8000);
-        r.matchingStateConnects = config.token() === token && asked.length === 2;
+        r.matchingStateConnects = config.token() === token && asked.length === 3;
         return out({ ok: Object.values(r).every((v) => v !== false), deeplink: r });
       }
       if (mode === "quit") {

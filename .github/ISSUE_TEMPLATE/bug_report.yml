@@ -1,0 +1,52 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Where?
+      options:
+        - Web app
+        - Mac app
+        - Installation / self-hosting
+    validations:
+      required: true
+  - type: dropdown
+    id: hosting
+    attributes:
+      label: How do you run the web app?
+      options:
+        - Docker Compose
+        - Vercel
+        - Other platform (Railway, Render, Fly, Coolify…)
+        - Local development
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage
+      options:
+        - Local disk (default)
+        - S3-compatible bucket
+        - Vercel Blob
+        - Not sure
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Mac app version (Settings), macOS version, browser, and the web app's git commit or release if you know it.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`docker compose logs app`, Vercel function logs, or the Mac app run from Terminal. Remove secrets first."
+      render: text

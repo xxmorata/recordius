@@ -577,6 +577,10 @@ r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "cap te
   const viewer = client();
   r = await viewer.call("POST", `/api/videos/${video.id}/unlock`, { password: "cap test pw" }, { headers: { "x-forwarded-for": "198.51.100.77" } });
   await expectStatus(r, 200, "a blocked client's attempts don't lock out a real viewer");
+  const burst = await Promise.all(Array.from({ length: 15 }, (_, i) => client().call("POST", `/api/videos/${video.id}/unlock`, { password: `x${i}` }, { headers: { "x-forwarded-for": "198.51.100.200" } })));
+  const tally = burst.reduce((t, b) => ({ ...t, [b.status]: (t[b.status] ?? 0) + 1 }), {});
+  assert.deepEqual(tally, { 403: 8, 429: 7 }, `parallel unlock burst: ${JSON.stringify(tally)}`);
+  ok("15 parallel password guesses: exactly 8 are checked");
 }
 r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: null });
 
@@ -596,6 +600,10 @@ await expectStatus(r, 200, "same-site POST with Origin allowed");
   for (let i = 0; i < 11; i++) codes.push((await guesser.call("POST", "/api/auth/login", { email: `nobody${stamp}@test.dev`, password: `guess${i}` })).status);
   assert.deepEqual(codes, [...Array(10).fill(401), 429]);
   ok("sign-in guessing is limited per account (10 per 15 min)");
+  const burst = await Promise.all(Array.from({ length: 25 }, (_, i) => client().call("POST", "/api/auth/login", { email: `burst${stamp}@test.dev`, password: `p${i}` })));
+  const tally = burst.reduce((t, b) => ({ ...t, [b.status]: (t[b.status] ?? 0) + 1 }), {});
+  assert.deepEqual(tally, { 401: 10, 429: 15 }, `parallel burst: ${JSON.stringify(tally)}`);
+  ok("25 parallel guesses: exactly 10 get through to the password check");
   const fine = client();
   await expectStatus(await fine.call("POST", "/api/auth/login", { email: `owner${stamp}@test.dev`, password: "password1" }), 200, "other accounts can still sign in");
 }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DropZone, useUploads } from "./Uploads";
-import { Archive, ArchiveRestore, Check, Download, Eye, KeyRound, Upload, Link2, MoreHorizontal, Pencil, Play, Search, Share2, Trash2, Video as VideoIcon, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, Clock, Download, Eye, KeyRound, Upload, Link2, MoreHorizontal, Pencil, Play, Search, Share2, Trash2, Video as VideoIcon, X } from "lucide-react";
 import { Avatar, Button, Dialog, EmptyState, Input, Menu, Select, api, cx } from "./ui";
 import { useToast } from "./Toast";
 import { PrivacyIcon, ShareDialog } from "./ShareDialog";
@@ -328,9 +328,22 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
                         <Eye className="size-3.5" /> {v.views}
                       </span>
                       <span aria-hidden>·</span>
-                      <PrivacyIcon privacy={v.privacy} className="inline-block size-3.5" />
-                      {v.privacy === "link" && v.link.hasPassword && <KeyRound className="size-3.5" aria-label="Password protected" />}
-                      {v.privacy === "link" && v.link.expiresAt !== null && v.link.expiresAt < Date.now() && <span className="text-danger">Link expired</span>}
+                      <span title={PRIVACY_LABELS[v.privacy].title} className="inline-flex">
+                        <PrivacyIcon privacy={v.privacy} className="inline-block size-3.5" />
+                      </span>
+                      {v.privacy === "link" && v.link.hasPassword && (
+                        <span title="Password protected" className="inline-flex">
+                          <KeyRound className="size-3.5" aria-label="Password protected" />
+                        </span>
+                      )}
+                      {v.privacy === "link" && v.link.expiresAt !== null &&
+                        (v.link.expiresAt < Date.now() ? (
+                          <span className="text-danger">Link expired</span>
+                        ) : (
+                          <span title={`Link expires in ${pluralize(Math.max(1, Math.ceil((v.link.expiresAt - Date.now()) / 864e5)), "day")}`} className="inline-flex" suppressHydrationWarning>
+                            <Clock className="size-3.5" aria-label="Link expires" />
+                          </span>
+                        ))}
                     </p>
                   </div>
                   <Menu

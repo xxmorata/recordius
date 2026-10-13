@@ -139,10 +139,12 @@ export function WorkspaceSettings({ workspace, members, invites: initialInvites,
               <p className="mt-0.5 text-sm text-ink-3">Anyone with an invite link can create an account in this workspace. Links expire after 14 days.</p>
             </div>
             <div className="flex items-center gap-2">
-              <Select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as "member" | "admin")} className="h-10 w-32">
-                <option value="member">As member</option>
-                <option value="admin">As admin</option>
-              </Select>
+              <div className="w-36 shrink-0">
+                <Select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as "member" | "admin")} className="h-10" aria-label="Role for new people">
+                  <option value="member">As member</option>
+                  <option value="admin">As admin</option>
+                </Select>
+              </div>
               <Button onClick={createInvite} loading={creating} icon={<Link2 className="size-4" />}>
                 Create invite link
               </Button>
@@ -163,8 +165,8 @@ export function WorkspaceSettings({ workspace, members, invites: initialInvites,
             <ul className="mt-4 divide-y divide-line rounded-xl border border-line">
               {invites.map((i) => (
                 <li key={i.id} className="flex items-center gap-3 px-4 py-3 text-sm">
-                  <Link2 className="size-4 text-ink-3" />
-                  <span className="flex-1">
+                  <Link2 className="size-4 shrink-0 text-ink-3" />
+                  <span className="min-w-0 flex-1">
                     Invite as {ROLE_LABEL[i.role].toLowerCase()} · created {formatRelative(i.createdAt)}
                     {i.createdBy ? ` by ${i.createdBy}` : ""} · used {i.uses}×
                   </span>

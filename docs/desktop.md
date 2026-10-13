@@ -83,6 +83,8 @@ Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubb
 - **"Screen recording is off" stays on after enabling it** — click *Relaunch* in the panel, or quit and reopen the app. If System Settings lists two "Recordius" entries, remove the stale one (−) and toggle the remaining one.
 - **No windows in the picker** — the window list appears only after Screen Recording is allowed.
 - **The browser didn't open the app** — use *Paste a connection code instead*.
+- **"Connect Recordius to …?"** — the app shows this when a connect link didn't come from the app's own *Continue in browser* step (for example after you signed in again in between). Check that the address is your Recordius server, then click *Connect*. Never connect to an address you don't recognise.
+- **"Enter your workspace address" / can't connect** — the server must use `https://` (only `http://localhost` is allowed without it).
 - **"This Mac is no longer connected"** — the device was disconnected from the web app; connect it again from *Get the app*.
 - **Recording works but the share page says "uploading" for a long time** — open the panel: if the upload didn't finish, a banner shows **Retry now** (the app also retries by itself). The local file is in `~/Movies/Recordius`.
 - Logs: run `/Applications/Recordius.app/Contents/MacOS/Recordius` from Terminal to see output.
@@ -99,6 +101,20 @@ node scripts/package.mjs --release  # + DMG, update tarball and SHA256SUMS in di
 
 Releases are built by GitHub Actions: bump `version` in `desktop/package.json`, then `git tag v1.2.3 && git push origin v1.2.3`. The workflow uploads the DMG, the update tarball and checksums to a GitHub release, which installed apps pick up through *Check for updates*.
 
+### Signed updates
+
+In-app updates only install when the app code is signed with the project's update key. The build writes `manifest.json` (SHA-256 of every file) and `manifest.sig` (Ed25519) into the app code; the updater refuses anything that doesn't verify, and the launcher inside the code-signed `.app` checks it again on every start before loading an update. The bundle is also built with Electron fuses that disable `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` and `--inspect`.
+
+**Publishing your own releases (forks):**
+
+```bash
+# one-time: create your own update key
+node -e 'const {generateKeyPairSync}=require("crypto");const k=generateKeyPairSync("ed25519");
+console.log(k.privateKey.export({type:"pkcs8",format:"pem"}));console.log(k.publicKey.export({type:"spki",format:"pem"}))'
+```
+
+Put the private key in `~/.config/recordius/update-signing.pem` (local builds) and in the repository secret `UPDATE_SIGNING_KEY` (GitHub Actions); paste the public key into `PUBLIC_KEY` in `desktop/src/verify.js`; set `updateRepo` in `desktop/src/config.js` to your repository. Apps you build then only accept updates signed by you.
+
 ### Automated tests
 
 ```bash
@@ -106,5 +122,7 @@ RECORDIUS_USER_DATA=/tmp/rcd-test RECORDIUS_E2E=ui RECORDIUS_E2E_FAKE=1 \
   RECORDIUS_E2E_CONNECT="http://localhost:3000 rcd_…" npx electron .        # clicks through the panel
 RECORDIUS_USER_DATA=/tmp/rcd-test RECORDIUS_E2E=cam:6000 RECORDIUS_E2E_FAKE=1 npx electron .   # records with a fake camera and uploads
 ```
+
+Other modes: `retry` (failed uploads are queued and finished later), `deeplink` (connect links from other websites need confirmation), `quit`, `update` (with `RECORDIUS_UPDATE_URL` pointing at a test release), `signin`. `npm test` runs the upload-queue unit test without Electron.
 
 `RECORDIUS_E2E_FAKE=1` uses Chromium's synthetic camera and microphone, so the tests need no macOS permissions; `screen` and `screen-cam` modes need Screen Recording.

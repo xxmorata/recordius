@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="#-docker-any-server"><b>Docker</b></a> ·
-  <a href="#-vercel"><b>Vercel</b></a> ·
-  <a href="#%EF%B8%8F-any-other-platform"><b>Railway, Render, Fly, Coolify…</b></a> ·
+  <a href="#docker-any-server"><b>Docker</b></a> ·
+  <a href="#vercel"><b>Vercel</b></a> ·
+  <a href="#any-other-platform"><b>Railway, Render, Fly, Coolify…</b></a> ·
   <a href="INSTALL.md"><b>Step-by-step guide</b></a>
 </p>
 
@@ -51,7 +51,7 @@
 > **Using an AI coding agent?** Give it this link and say *"install Recordius for me"*:
 > `https://github.com/xxmorata/recordius/blob/main/INSTALL.md` — every command, in order, with checks after each step.
 
-### 🐳 Docker (any server)
+### Docker (any server)
 
 Needs a Linux server (or a Mac/NAS) with Docker. Database and files stay on that machine.
 
@@ -64,13 +64,13 @@ docker compose up -d                                                  # → http
 
 For a real domain with automatic HTTPS: point the domain's DNS at the server, set `DOMAIN=videos.example.com` and `APP_URL=https://videos.example.com` in `.env`, then run `docker compose --profile https up -d`. Details: [docs/self-hosting.md](docs/self-hosting.md#option-a--docker-compose-any-server).
 
-### ▲ Vercel
+### Vercel
 
 <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fxxmorata%2Frecordius%2Ftree%2Fmain%2Fweb&project-name=recordius&repository-name=recordius&env=AUTH_SECRET&envDescription=A%20long%20random%20string%20that%20signs%20sessions%20(e.g.%20openssl%20rand%20-hex%2032)&envLink=https%3A%2F%2Fgithub.com%2Fxxmorata%2Frecordius%2Fblob%2Fmain%2Fdocs%2Fself-hosting.md&stores=%5B%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%2C%7B%22type%22%3A%22integration%22%2C%22integrationSlug%22%3A%22neon%22%2C%22productSlug%22%3A%22neon%22%2C%22protocol%22%3A%22storage%22%7D%5D"><img src="https://vercel.com/button" alt="Deploy with Vercel"></a>
 
 The button creates the project in *your* Vercel account with a private Blob store and a Neon Postgres database (the free tiers are enough for a small team), and asks for one value: `AUTH_SECRET` (any long random string, e.g. `openssl rand -hex 32`). Prefer your own bucket? Skip the Blob store and set the `S3_*` variables instead.
 
-### ☁️ Any other platform
+### Any other platform
 
 Railway, Render, Fly.io, Coolify, Dokku, CapRover, Kubernetes… anything that can build `web/Dockerfile` (or run `npm run build && npm start`) and give it a Postgres database. Store files in an S3-compatible bucket, or on a persistent disk with `STORAGE=local`. See [docs/self-hosting.md](docs/self-hosting.md#option-c--any-other-platform).
 

@@ -19,10 +19,14 @@ export async function limit(rules: Rule[], message = "Too many attempts. Try aga
   let over = false;
   for (const r of rules) {
     const key = keyOf(r.scope, r.key);
-    const [row] = await db`
-      with ins as (insert into auth_attempts (scope, key) values (${r.scope}, ${key}) returning id)
-      select (select id from ins) as id, 1 + count(*) as n
-      from auth_attempts where scope = ${r.scope} and key = ${key} and at > now() - ${r.window}::interval`;
+    // One transaction per key, serialized with an advisory lock: concurrent requests for the same key
+    // count each other's attempts instead of all seeing the same (old) number.
+    const row = await db.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtext(${`${r.scope}:${key}`}))`;
+      const [inserted] = await tx`insert into auth_attempts (scope, key) values (${r.scope}, ${key}) returning id`;
+      const [counted] = await tx`select count(*) as n from auth_attempts where scope = ${r.scope} and key = ${key} and at > now() - ${r.window}::interval`;
+      return { id: inserted.id, n: counted.n };
+    });
     ids.push(String(row.id));
     if (Number(row.n) > r.limit) over = true;
   }

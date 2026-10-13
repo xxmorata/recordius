@@ -391,16 +391,17 @@ function handleDeepLink(raw) {
  */
 let pendingConnect = null; // { state, until }
 
-function startConnect() {
-  pendingConnect = { state: require("node:crypto").randomBytes(16).toString("hex"), until: Date.now() + 30 * 60 * 1000 };
+function startConnect(base) {
+  pendingConnect = { state: require("node:crypto").randomBytes(16).toString("hex"), base, until: Date.now() + 30 * 60 * 1000 };
   return pendingConnect.state;
 }
 
 async function connectFromLink(server, token, state) {
   const base = normalizeServer(server);
   if (!base || !token) throw new Error("That connection link isn't valid");
-  const expected = pendingConnect && pendingConnect.until > Date.now() ? pendingConnect.state : null;
-  if (!expected || state !== expected) {
+  // Trusted only for the server the code was issued for; anything else (another host, an alias) asks.
+  const trusted = Boolean(pendingConnect && pendingConnect.until > Date.now() && state === pendingConnect.state && base === pendingConnect.base);
+  if (!trusted) {
     const current = config.isConnected() ? config.load().server : null;
     const host = new URL(base).host;
     const { response } = await dialog.showMessageBox({
@@ -840,7 +841,7 @@ ipcMain.handle("media:status", () => systemPreferences.getMediaAccessStatus("scr
 ipcMain.handle("account:open-connect", (_e, server) => {
   const base = normalizeServer(server);
   if (!base) throw new Error("Enter your workspace address, e.g. https://recordius.yourstudio.com");
-  shell.openExternal(`${base}/download?connect=${startConnect()}`);
+  shell.openExternal(`${base}/download?connect=${startConnect(base)}`);
   return base;
 });
 ipcMain.handle("account:paste-code", async (_e, code) => {

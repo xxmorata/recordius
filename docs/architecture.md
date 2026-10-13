@@ -9,19 +9,21 @@
 │  menu bar + dock     │ ──────────────────────────►│  /api/* (REST, JSON)         │
 │                      │   POST /api/videos         │                              │
 │  MediaRecorder       │   POST /api/videos/:id/…   │  Postgres  ──── videos, users│
-│  5 MB multipart      │                            │  Vercel Blob (private) ─ files│
-│  parts, live         │ ──────────────────────────►│  presigned URLs for viewers  │
-└──────────────────────┘   client tokens, scoped    └──────────────────────────────┘
+│  multipart parts,    │                            │  Storage (private) ─── files │
+│  uploaded live       │ ──────────────────────────►│  signed URLs for viewers     │
+└──────────────────────┘   signed upload URLs       └──────────────────────────────┘
+                                                      Storage = local disk, any S3-compatible
+                                                      bucket, or Vercel Blob (web/lib/storage)
 ```
 
-- **web/** — Next.js 16 (App Router, server components + a few client islands), Tailwind 4, `postgres` driver, `@vercel/blob`. No ORM: a handful of SQL files in `db/migrations` and typed query helpers in `lib/`.
+- **web/** — Next.js 16 (App Router, server components + a few client islands), Tailwind 4, `postgres` driver. No ORM: a handful of SQL files in `db/migrations` and typed query helpers in `lib/`. Files go through one small storage interface (`lib/blob.ts` → `lib/storage/{local,s3,vercel-blob}.ts`).
 - **desktop/** — Electron. A hidden "recorder" window owns the capture streams and the `MediaRecorder`; the visible windows are the Loom-style panel, the camera bubble, the vertical control bar and the countdown overlay. The main process runs the state machine (`idle → preparing → recording ⇄ paused → stopping`), the uploader and the updater.
 
 ## A recording, step by step
 
-1. **Start** — the desktop app acquires the capture streams (screen via `desktopCapturer`, camera, mic, optional system-audio loopback) and *in parallel* calls `POST /api/videos`. The server inserts a `videos` row (`status = recording`, privacy = workspace default, a random `secret` path segment) and returns the share URL plus two **client upload tokens**, each restricted to one pathname (`videos/<id>/<secret>/video.mp4` and `…/thumb.jpg`), to `video/*` or `image/jpeg`, and to 12 hours. This mirrors Loom, which hands the recorder temporary per-video S3 credentials before the first frame.
+1. **Start** — the desktop app acquires the capture streams (screen via `desktopCapturer`, camera, mic, optional system-audio loopback) and *in parallel* calls `POST /api/videos`. The server inserts a `videos` row (`status = recording`, privacy = workspace default, a random `secret` path segment) and returns the share URL plus an **upload grant** for exactly two files (`videos/<id>/<secret>/video.mp4` and `…/thumb.jpg`), valid 12 hours. With Vercel Blob the grant holds two client tokens restricted to those pathnames; with S3 or local storage the recorder asks `POST /api/videos/:id/upload` for signed part URLs (only the person who recorded the video can, and only for its two files). This mirrors Loom, which hands the recorder temporary per-video S3 credentials before the first frame.
 2. **Countdown** — 3-2-1 overlay (content-protected, so it is not captured).
-3. **Recording** — `MediaRecorder` emits a chunk every second (H.264/AAC MP4 when the OS provides it). Each chunk is appended to a local file in `~/Movies/Recordius` *and* packed into 5 MB parts that are uploaded immediately as a multipart upload (3 in parallel, with retries). Loom does the same with HLS segments.
+3. **Recording** — `MediaRecorder` emits a chunk every second (H.264/AAC MP4 when the OS provides it). Each chunk is appended to a local file in `~/Movies/Recordius` *and* packed into parts (8 MB; 5 MB with Vercel Blob) that are uploaded immediately as a multipart upload (3 in parallel, with retries). Loom does the same with HLS segments.
 4. **Stop** — the link is copied and opened right away. The uploader flushes the last part, completes the multipart upload and calls `POST /api/videos/:id/complete` with duration and size (`status = ready`). The share page polls `GET /api/videos/:id` every 2.5 s until then. If the live upload broke, the whole local file is uploaded instead. If that fails too (or the app quits mid-upload), the recording stays in `pending-uploads.json` in the app's data folder: the app retries on start, every 5 minutes and after the Mac wakes up, asking `POST /api/videos/:id/upload-token` for fresh upload tokens (the original ones expire after 12 hours). A video deleted on the web meanwhile (404) or already finished (409) is dropped from the queue.
 5. **Thumbnail** — a frame is grabbed ~1 s into the recording and uploaded with the second token; `POST /api/videos/:id/thumbnail` marks it.
 
@@ -33,7 +35,7 @@
 | `workspace` | signed-in members of the video's workspace |
 | `private` | the owner, workspace admins, and emails listed in `video_access` |
 
-The share page, the embed page and `GET /api/videos/:id` all go through `accessFor()` in `web/lib/videos.ts`. Only when it returns an access level does the server **presign** the private Blob URLs (`issueSignedToken` once per hour for the whole store, cached in memory; `presignUrl` per file, 6 h validity). Nothing in the store is reachable without a presigned URL, and the raw object URL returns 403.
+The share page, the embed page and `GET /api/videos/:id` all go through `accessFor()` in `web/lib/videos.ts`. Only when it returns an access level does the server **sign** URLs for the files (6 h validity): S3 presigned GETs, Vercel Blob presigned URLs, or for local storage `/api/storage/file?p=…&e=…&s=…` with an HMAC over path, expiry and download name. Nothing in storage is reachable without a signed URL; the raw object URL returns 403.
 
 Owners and admins can change privacy, rename, archive and delete; members can only manage their own videos.
 
@@ -53,7 +55,7 @@ Loom's desktop app (`Loom.app` 0.379, Electron) was studied with [REA](https://g
 
 | Observed in Loom | Recordius |
 | --- | --- |
-| `startNewRecordingSession` returns the video id, share URL and temporary S3 credentials *before* recording | `POST /api/videos` returns the share URL and scoped Blob client tokens |
+| `startNewRecordingSession` returns the video id, share URL and temporary S3 credentials *before* recording | `POST /api/videos` returns the share URL and a per-video upload grant |
 | Native recorder (ScreenCaptureKit + VideoToolbox) writes HLS segments that are uploaded while recording | `MediaRecorder` chunks → live multipart upload |
 | `CompleteVideo` mutation on stop | `POST /api/videos/:id/complete` |
 | `openSharePageAndCopyUrl`: clipboard + open browser | identical |

@@ -4,18 +4,18 @@ Thanks for helping. This page gets you from clone to a working local setup in ab
 
 ## Local setup
 
-**Prerequisites:** Node 22+, Postgres 14+ (any way you like: Homebrew, Docker, Postgres.app), a Vercel account for a Blob store (free), and `ffmpeg` if you want demo videos.
+**Prerequisites:** Node 22+, Postgres 14+ (any way you like: Homebrew, Docker, Postgres.app) and `ffmpeg` if you want demo videos. Files are stored on disk (`web/storage/`) by default — no cloud account needed.
 
 ```bash
 git clone https://github.com/xxmorata/recordius && cd recordius
 
 # ── web ──
 cd web && npm install
-cp .env.example .env.local        # fill in the three required values:
+cp .env.example .env.local        # fill in:
 #   DATABASE_URL=postgres://postgres@127.0.0.1:5432/recordius_dev   (create the database first)
-#   BLOB_READ_WRITE_TOKEN=…        a *private* Blob store: `vercel blob create-store recordius-dev --access private`,
-#                                  then `vercel env pull` in a linked project, or copy the token from the Vercel dashboard
 #   AUTH_SECRET=$(openssl rand -hex 32)
+#   APP_URL=http://localhost:3000
+#   optional: S3_* or BLOB_READ_WRITE_TOKEN to develop against a bucket instead of web/storage/
 npm run dev                       # http://localhost:3000 → /setup creates the schema and the first account
 node scripts/seed-demo.mjs        # optional: demo workspace (demo@recordius.local / password1) + 3 real videos
 
@@ -24,13 +24,15 @@ cd ../desktop && npm install
 npm start                         # runs from source; connect it to http://localhost:3000 via Get the app → Connect
 ```
 
+Or run everything (Postgres + the app) with Docker from the repository root: `cp .env.example .env`, set `AUTH_SECRET`, `docker compose up -d --build`.
+
 A Postgres in Docker, if you need one: `docker run -d --name rcd-pg -e POSTGRES_HOST_AUTH_METHOD=trust -p 5432:5432 postgres:17 && docker exec rcd-pg createdb -U postgres recordius_dev`.
 
 ## Tests
 
 | What | Command | Notes |
 | --- | --- | --- |
-| Web API, end to end (150+ checks) | `cd web && npm test` | against the running dev server; **wipes nothing but needs an empty database** (it starts at `/setup`). `BASE=https://…` to target another server. |
+| Web API, end to end (~180 checks) | `cd web && npm test` | against a running server; **needs an empty database** (it starts at `/setup`). `BASE=http://localhost:3100` to target another instance. Run it once per storage provider you touch (local, S3 — e.g. MinIO — and Vercel Blob); the suite adapts to whichever the server uses. |
 | Desktop: panel UI | `cd desktop && RECORDIUS_USER_DATA=/tmp/rcd RECORDIUS_E2E=ui RECORDIUS_E2E_FAKE=1 RECORDIUS_E2E_CONNECT="http://localhost:3000 <device token>" npx electron .` | device token: web → Get the app → Connect desktop app → *Paste a connection code* value |
 | Desktop: record → upload → ready | `RECORDIUS_E2E=cam:6000 RECORDIUS_E2E_FAKE=1 …` | fake camera/mic; `screen` / `screen-cam` need the Screen Recording permission |
 | Desktop: upload queue & local-copy cleanup | `cd desktop && npm test` | plain Node, no Electron or server needed; runs in CI |
@@ -48,11 +50,13 @@ web/                     Next.js 16 (App Router)
   app/(app)/             library, settings, download (signed-in shell)
   app/share/[id]         public share page   app/embed/[id]  iframe player
   app/api/               REST handlers; every handler is wrapped by route() in lib/auth.ts
-  lib/                   auth, db (postgres + migrations), blob (private store + presigned URLs), videos (access rules), workspace
+  lib/                   auth, db (postgres + migrations), videos (access rules), workspace, rate-limit
+  lib/blob.ts            storage facade; lib/storage/{local,s3,vercel-blob}.ts are the drivers
   lib/types.ts           shared types/constants — must stay free of server imports (client components import it)
-  db/migrations/*.sql    applied in order by scripts/migrate.mjs or on first visit to /setup
+  db/migrations/*.sql    applied in order on every server start (instrumentation.ts) or by scripts/migrate.mjs
 desktop/                 Electron
-  launcher/              the only code inside the signed .app; loads the newest app code
+  launcher/              the only code inside the signed .app; loads the newest app code if its signature verifies
+  src/verify.js          signed manifests for in-app updates (also copied into the launcher)
   src/main.js            windows, state machine (idle → preparing → recording ⇄ paused → stopping), IPC
   src/uploader.js        live multipart upload while recording;  src/updater.js  GitHub-release updates
   renderer/              panel (recorder + sign-in + settings), camera bubble, controls bar, countdown, hidden recorder
@@ -70,8 +74,8 @@ docs/                    self-hosting, desktop, architecture (incl. what was bor
 
 ## Releasing the desktop app
 
-1. Bump `version` in `desktop/package.json` **and** `desktop/launcher/package.json` (they must match the tag).
-2. `git tag v1.2.3 && git push origin v1.2.3` — GitHub Actions builds the universal app, signs it, and attaches the DMG, the update tarball and `SHA256SUMS.txt` to a release.
+1. Bump `version` in `desktop/package.json` (the tag must match it).
+2. `git tag v1.2.3 && git push origin v1.2.3` — GitHub Actions builds the universal app, code-signs it, signs the update payload with `UPDATE_SIGNING_KEY`, and attaches the DMG, the update tarball and `SHA256SUMS.txt` to a release.
 3. Installed apps pick it up through *Settings → Check for updates*.
 
 Signing uses the `MAC_SIGNING_P12` / `MAC_SIGNING_P12_PASSWORD` secrets (a self-signed certificate is enough — see [docs/desktop.md](docs/desktop.md#permissions)). Forks without the secrets get ad-hoc-signed builds that work but ask for Screen Recording again after each update.

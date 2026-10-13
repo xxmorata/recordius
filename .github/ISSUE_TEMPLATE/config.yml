@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/xxmorata/recordius/security/advisories/new
+    about: Please report security problems privately, not in a public issue.
+  - name: Installation guide
+    url: https://github.com/xxmorata/recordius/blob/main/INSTALL.md
+    about: Step-by-step setup for Docker, Vercel and the Mac app.

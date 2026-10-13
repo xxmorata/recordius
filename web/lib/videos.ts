@@ -158,13 +158,15 @@ export async function unlockVideo(id: string, password: string, clientIp: string
   if (row.link_expires_at && new Date(row.link_expires_at).getTime() < Date.now()) throw new LinkLockedError("expired");
   const db = sql();
   const clientKey = createHmac("sha256", authSecret()).update(`ip:${ipBucket(clientIp)}`).digest("hex");
-  // Record the attempt first, then count — in one statement, so concurrent guesses all see each other.
-  const [attempt] = await db`
-    with ins as (insert into unlock_attempts (video_id, client_key) values (${id}, ${clientKey}) returning id)
-    select (select id from ins) as id,
-      1 + count(*) filter (where client_key = ${clientKey}) as mine,
-      1 + count(*) as total
-    from unlock_attempts where video_id = ${id} and at > now() - ${ATTEMPT_WINDOW}::interval`;
+  // Record the attempt first, then count — serialized per video with an advisory lock, so concurrent
+  // guesses always count each other (separate statements wouldn't see each other's uncommitted rows).
+  const attempt = await db.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(hashtext(${`unlock:${id}`}))`;
+    const [inserted] = await tx`insert into unlock_attempts (video_id, client_key) values (${id}, ${clientKey}) returning id`;
+    const [counts] = await tx`select count(*) filter (where client_key = ${clientKey}) as mine, count(*) as total
+      from unlock_attempts where video_id = ${id} and at > now() - ${ATTEMPT_WINDOW}::interval`;
+    return { id: inserted.id, mine: counts.mine, total: counts.total };
+  });
   const mine = Number(attempt.mine);
   // The per-video cap only applies to clients that have already failed here, so someone hammering a
   // link can't lock out a viewer who types the right password the first time.

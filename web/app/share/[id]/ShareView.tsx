@@ -203,7 +203,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
           </Button>
           <Menu
             trigger={
-              <Button variant="secondary" aria-label="More" className="w-10 px-0">
+              <Button variant="secondary" aria-label="More" title="More" className="w-10 px-0!">
                 <MoreHorizontal className="size-5" />
               </Button>
             }
