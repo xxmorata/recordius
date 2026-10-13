@@ -336,10 +336,9 @@ api.on("account:changed", (info) => {
 // ───────── wiring ─────────
 
 $("close").onclick = $("closeSignin").onclick = $("closeSettings").onclick = () => api.send("panel:close");
-$("openSettings").onclick = $("openSettings2").onclick = () => setView("settings");
+$("openSettings").onclick = () => setView("settings");
 $("settingsBack").onclick = () => setView("recorder");
 $("library").onclick = () => api.send("panel:library");
-$("more").onclick = () => setView("settings");
 $("grantScreen").onclick = () => api.invoke("media:request", "screen");
 $("relaunch").onclick = () => api.send("panel:relaunch");
 $("start").onclick = () => {

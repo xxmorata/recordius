@@ -172,7 +172,7 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
                   </div>
                   <Menu
                     trigger={
-                      <button type="button" className="focus-ring rounded-lg p-1.5 text-ink-3 opacity-0 transition group-hover:opacity-100 hover:bg-surface-2 focus-visible:opacity-100 data-[open]:opacity-100" aria-label="More">
+                      <button type="button" className="focus-ring rounded-lg p-1.5 text-ink-4 transition hover:bg-surface-2 hover:text-ink" aria-label="More">
                         <MoreHorizontal className="size-5" />
                       </button>
                     }

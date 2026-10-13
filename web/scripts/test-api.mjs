@@ -302,8 +302,23 @@ r = await owner.call("DELETE", `/api/videos/${video.id}`);
 await expectStatus(r, 200, "delete video");
 r = await owner.call("GET", `/api/videos/${video.id}`);
 await expectStatus(r, 404, "deleted video is gone");
-r = await owner.call("DELETE", `/api/workspace/members/${ivyId}`);
-await expectStatus(r, 200, "remove member");
+// a removed member's videos must survive and pass to the admin
+{
+  const ivy = client();
+  await ivy.call("POST", "/api/auth/login", { email: `ivy${stamp}@test.dev`, password: "newpassword10" });
+  const dev = await ivy.call("POST", "/api/desktop/connect", { deviceName: "Ivy Mac 2" });
+  const ivyDesktop = client();
+  ivyDesktop.setBearer(dev.json.token);
+  const created = await ivyDesktop.call("POST", "/api/videos", { title: "Ivy's video", mimeType: "video/mp4" });
+  r = await owner.call("DELETE", `/api/workspace/members/${ivyId}`);
+  await expectStatus(r, 200, "remove member");
+  r = await owner.call("GET", `/api/videos/${created.json.id}`);
+  await expectStatus(r, 200, "removed member's video still exists");
+  assert.equal(r.json.access, "owner");
+  assert.equal(r.json.owner.email, `owner${stamp}@test.dev`);
+  ok("video ownership passed to the admin");
+  await owner.call("DELETE", `/api/videos/${created.json.id}`);
+}
 r = await owner.call("GET", "/api/devices");
 const deviceId = r.json.devices[0].id;
 r = await owner.call("DELETE", `/api/devices/${deviceId}`);

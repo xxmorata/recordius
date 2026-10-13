@@ -36,11 +36,9 @@ export default async function Join({ params }: { params: Promise<{ token: string
         <p className="mt-2 text-sm text-ink-3">
           An account belongs to one workspace. To join <b>{invite.workspaceName}</b>, sign out and open this link again with a different email.
         </p>
-        <form action="/api/auth/logout" method="post" className="mt-6">
-          <Link href="/library" className="block text-center text-sm font-medium text-accent hover:underline">
-            Stay in {user.workspace.name}
-          </Link>
-        </form>
+        <Link href="/library" className="mt-6 block text-center text-sm font-medium text-accent hover:underline">
+          Stay in {user.workspace.name}
+        </Link>
       </>
     );
   }

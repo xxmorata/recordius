@@ -69,15 +69,36 @@ const [appPath] = await packager({
   },
 });
 const bundle = path.join(appPath, "Recordius.app");
-// Ad-hoc signature: no Apple Developer account needed. Users right-click → Open once.
-execFileSync("codesign", ["--force", "--deep", "--sign", "-", bundle], { stdio: "inherit" });
-console.log(`built ${bundle}`);
+// Signing. macOS ties privacy permissions (Screen Recording, Camera, Mic) to the app's code-signing
+// requirement. With an ad-hoc signature that requirement is the hash of the build, so every build is
+// a "new app" that has to be allowed again. A certificate — even a self-signed one — gives a stable
+// requirement ("identifier … and certificate root = …"), so permissions survive every update.
+//   RECORDIUS_SIGN_IDENTITY   name of the certificate (default: "Recordius Code Signing")
+//   RECORDIUS_SIGN_KEYCHAIN   keychain that holds it (default: ~/Library/Keychains/recordius-signing.keychain-db)
+// Without a usable certificate the build falls back to an ad-hoc signature.
+const identity = process.env.RECORDIUS_SIGN_IDENTITY ?? "Recordius Code Signing";
+const keychain = process.env.RECORDIUS_SIGN_KEYCHAIN ?? path.join(homedir(), "Library", "Keychains", "recordius-signing.keychain-db");
+const signArgs = ["--force", "--deep", "--timestamp=none"];
+let signedWith = "ad-hoc";
+if (existsSync(keychain)) {
+  try {
+    execFileSync("codesign", [...signArgs, "--sign", identity, "--keychain", keychain, bundle], { stdio: "pipe" });
+    signedWith = identity;
+  } catch (err) {
+    console.warn(`certificate signing failed (${String(err.stderr || err.message).trim()}); using ad-hoc`);
+  }
+}
+if (signedWith === "ad-hoc") execFileSync("codesign", ["--force", "--deep", "--sign", "-", bundle], { stdio: "inherit" });
+const requirement = execFileSync("codesign", ["-d", "-r-", bundle], { stdio: "pipe", encoding: "utf8" }).split("\n").find((l) => l.startsWith("designated"));
+console.log(`built ${bundle}\nsigned with: ${signedWith}\n${requirement}`);
 
 if (!flag("--no-install")) {
   const dest = path.join(homedir(), "Applications", "Recordius.app");
+  try {
+    execFileSync("pkill", ["-f", "Recordius.app/Contents/MacOS/Recordius"], { stdio: "ignore" });
+  } catch {}
   rmSync(dest, { recursive: true, force: true });
   cpSync(bundle, dest, { recursive: true, verbatimSymlinks: true });
-  execFileSync("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-u", bundle]);
   console.log(`installed ${dest}`);
 }
 
@@ -101,6 +122,28 @@ if (flag("--release")) {
     .join("\n");
   writeFileSync(path.join(release, "SHA256SUMS.txt"), sums + "\n");
   console.log(`release assets in ${release}:\n${sums}`);
+}
+
+// Don't leave extra "Recordius" apps registered with macOS (they show up as duplicates in Spotlight
+// and in Privacy settings): unregister every bundle that still sits in dist/.
+const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+for (const b of findBundles(dist)) {
+  try {
+    execFileSync(lsregister, ["-u", b], { stdio: "ignore" });
+  } catch {}
+}
+rmSync(stage, { recursive: true, force: true });
+
+function findBundles(dir) {
+  const out = [];
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (!entry.isDirectory()) continue;
+    if (entry.name.endsWith(".app")) out.push(p);
+    else out.push(...findBundles(p));
+  }
+  return out;
 }
 
 function walkSize(dir) {

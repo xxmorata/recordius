@@ -106,8 +106,11 @@ export async function removeMember(user: CurrentUser, memberId: string) {
   if (!target[0]) throw new HttpError(404, "Member not found");
   if (target[0].role === "owner") throw new HttpError(403, "The owner can't be removed");
   if (target[0].role === "admin" && user.role !== "owner") throw new HttpError(403, "Only the owner can remove an admin");
-  // Their videos stay in the workspace; the account itself is removed (it only belonged here).
-  await sql()`delete from users where id = ${memberId}`;
+  // Their videos stay in the workspace (handed to the admin who removes them); the account itself is removed.
+  await sql().begin(async (tx) => {
+    await tx`update videos set owner_id = ${user.id} where owner_id = ${memberId} and workspace_id = ${user.workspace.id}`;
+    await tx`delete from users where id = ${memberId}`;
+  });
 }
 
 export async function updateWorkspace(user: CurrentUser, patch: { name?: string; defaultPrivacy?: Privacy }) {

@@ -229,7 +229,7 @@ export function WorkspaceSettings({ workspace, members, invites: initialInvites,
 
       <Dialog open={Boolean(removing)} onClose={() => setRemoving(null)} title={`Remove ${removing?.name}?`} width={420}>
         <p className="text-sm text-ink-2">
-          Their account on this Recordius will be deleted and the desktop app will be disconnected. Their videos stay in the workspace.
+          Their account on this Recordius will be deleted and their desktop app disconnected. Their videos stay in the workspace and become yours.
         </p>
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="secondary" onClick={() => setRemoving(null)}>

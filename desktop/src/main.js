@@ -33,6 +33,9 @@ const SHORTCUT_TOGGLE = "CommandOrControl+Shift+R";
 const SHORTCUT_PAUSE = "CommandOrControl+Shift+P";
 const COUNTDOWN_MS = 3000;
 const PANEL_WIDTH = 380;
+const PANEL_MARGIN = 28; // transparent space around the panel for its CSS shadow
+const PANEL_WINDOW = PANEL_WIDTH + PANEL_MARGIN * 2;
+const BUBBLE_MARGIN = 24;
 const E2E = Boolean(process.env.RECORDIUS_E2E);
 const log = (...args) => process.env.RECORDIUS_DEBUG && console.log("[recordius]", ...args);
 
@@ -92,9 +95,11 @@ function showPanel(view) {
     if (view) win.panel.webContents.send("panel:navigate", view);
     return;
   }
-  const w = createWindow("panel", { width: PANEL_WIDTH, height: 520, transparent: true, hasShadow: true, alwaysOnTop: false }, "panel.html", view ? { view } : undefined);
+  // No native shadow: for a transparent window macOS draws it for the whole rectangle, which shows up
+  // as a faint box around the rounded panel. The panel draws its own shadow in CSS instead.
+  const w = createWindow("panel", { width: PANEL_WINDOW, height: 560, transparent: true, hasShadow: false, alwaysOnTop: false }, "panel.html", view ? { view } : undefined);
   const d = activeDisplay().workArea;
-  w.setPosition(Math.round(d.x + d.width / 2 - PANEL_WIDTH / 2), Math.round(d.y + Math.max(40, d.height / 2 - 300)));
+  w.setPosition(Math.round(d.x + d.width / 2 - PANEL_WINDOW / 2), Math.round(d.y + Math.max(20, d.height / 2 - 300)));
   w.once("ready-to-show", () => {
     w.show();
     w.focus();
@@ -113,12 +118,12 @@ let cameraVisible = false;
 let cameraReadyWaiters = [];
 
 function cameraPlacement(display, size) {
-  return { x: display.workArea.x + 32, y: display.workArea.y + display.workArea.height - size - 32 };
+  return { x: display.workArea.x + 32 - BUBBLE_MARGIN, y: display.workArea.y + display.workArea.height - size - 32 - BUBBLE_MARGIN };
 }
 
 /** Shows the camera bubble; created once, then hidden/shown so switching settings never restarts the camera. */
 function showCamera(cameraId, display) {
-  const size = CAMERA_SIZES[config.load().cameraSize] ?? CAMERA_SIZES.m;
+  const size = (CAMERA_SIZES[config.load().cameraSize] ?? CAMERA_SIZES.m) + BUBBLE_MARGIN * 2;
   const target = display ?? activeDisplay();
   let w = win.camera;
   if (!w) {
@@ -604,10 +609,10 @@ ipcMain.handle("panel:sources", async () => {
 ipcMain.on("panel:resize", (_e, height) => {
   if (!win.panel || !Number.isFinite(height)) return;
   const area = screen.getDisplayMatching(win.panel.getBounds()).workArea;
-  const h = Math.min(Math.max(height, 200), area.height - 40);
-  win.panel.setContentSize(PANEL_WIDTH, h);
+  const h = Math.min(Math.max(height, 200), area.height - 20);
+  win.panel.setContentSize(PANEL_WINDOW, h);
   const [x, y] = win.panel.getPosition();
-  if (y + h > area.y + area.height) win.panel.setPosition(x, Math.max(area.y + 20, area.y + area.height - h - 20));
+  if (y + h > area.y + area.height) win.panel.setPosition(x, Math.max(area.y, area.y + area.height - h));
 });
 ipcMain.on("panel:relaunch", () => {
   app.relaunch();
@@ -671,7 +676,7 @@ function resizeCamera(size) {
   if (!win.camera || !CAMERA_SIZES[size]) return;
   const [x, y] = win.camera.getPosition();
   const [, h] = win.camera.getSize();
-  const px = CAMERA_SIZES[size];
+  const px = CAMERA_SIZES[size] + BUBBLE_MARGIN * 2;
   win.camera.setBounds({ x, y: y + h - px, width: px, height: px }); // keep the bottom edge anchored
 }
 ipcMain.on("camera:size", (_e, size) => {

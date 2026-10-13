@@ -36,10 +36,13 @@
 - **Library**: search, rename, archive, delete, view counts, "Workspace" tab for videos shared by teammates.
 - **Player**: speed control, keyboard shortcuts, picture-in-picture, fullscreen, link-at-timestamp (`?t=1m23s`), embed code.
 - **Private storage** — files sit in a private Vercel Blob store; viewers get short-lived signed URLs only after the access check.
-- **Updates that keep permissions** — the Mac app updates itself without re-asking macOS for Screen Recording access.
+- **Updates that keep permissions** — the Mac app is signed with a stable certificate and updates itself; macOS never asks for Screen Recording access twice.
 - **No vendor lock-in for your data**: Postgres (any provider) + Vercel Blob. Everything is exportable.
 
 ## Get started
+
+> **Using an AI coding agent?** Give it this link and say *"install Recordius for me"*:
+> `https://github.com/xxmorata/recordius/blob/main/INSTALL.md` — it contains every command, in order, with verification steps.
 
 ### 1. Deploy the web app
 

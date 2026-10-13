@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
 import { Sidebar } from "@/components/Sidebar";
 import { currentUser } from "@/lib/auth";
 import { viewUrl } from "@/lib/blob";
@@ -11,10 +10,7 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   if (!(await schemaReady())) redirect("/setup");
   const user = await currentUser();
-  if (!user) {
-    const path = (await headers()).get("x-invoke-path") ?? "/library";
-    redirect(`/login?next=${encodeURIComponent(path)}`);
-  }
+  if (!user) redirect("/login");
   const [counts, avatarUrl] = await Promise.all([countVideos(user), user.avatarPath ? viewUrl(user.avatarPath) : null]);
   return (
     <div className="flex min-h-dvh">
