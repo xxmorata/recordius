@@ -268,11 +268,18 @@ await watcherA.call("POST", `/api/videos/${video.id}/view`, { positionMs: 2400 }
 r = await owner.call("GET", `/api/videos/${video.id}`);
 assert.equal(r.json.views, viewsBefore, "repeat reports don't add views");
 ok("views count unique viewers");
+// trimmed video: viewers don't get the uncut file for download, the owner does
+r = await anon.call("GET", `/api/videos/${video.id}`);
+assert.equal(r.json.downloadUrl, null);
+r = await owner.call("GET", `/api/videos/${video.id}`);
+assert.ok(r.json.downloadUrl);
+ok("trimmed videos aren't downloadable by viewers");
+
 r = await member.call("GET", `/api/videos/${video.id}/viewers`);
 await expectStatus(r, 403, "member can't see viewer list");
 
 // password-protected link
-r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "abc" });
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "abcde" });
 await expectStatus(r, 400, "too-short password rejected");
 r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "open sesame" });
 await expectStatus(r, 200, "password set");
@@ -295,6 +302,12 @@ await expectStatus(r, 200, "workspace members skip the password");
 r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "another one" });
 r = await guest.call("GET", `/api/videos/${video.id}`);
 await expectStatus(r, 401, "changing the password re-locks");
+// brute force: 8 wrong attempts from one client, then 429 even with the right password
+for (let i = 0; i < 8; i++) await guest.call("POST", `/api/videos/${video.id}/unlock`, { password: `guess${i}` }, { headers: { "x-forwarded-for": "203.0.113.7" } });
+r = await guest.call("POST", `/api/videos/${video.id}/unlock`, { password: "another one" }, { headers: { "x-forwarded-for": "203.0.113.7" } });
+await expectStatus(r, 429, "password guessing is rate limited");
+r = await guest.call("POST", `/api/videos/${video.id}/unlock`, { password: "another one" }, { headers: { "x-forwarded-for": "198.51.100.9" } });
+await expectStatus(r, 200, "other clients aren't locked out");
 r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: null });
 r = await guest.call("GET", `/api/videos/${video.id}`);
 await expectStatus(r, 200, "removing the password opens it");

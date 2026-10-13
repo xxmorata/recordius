@@ -49,7 +49,7 @@ const VIDEO_SELECT = `
   select v.*, u.name as owner_name, u.email as owner_email, u.avatar_path as owner_avatar
   from videos v join users u on u.id = v.owner_id`;
 
-async function toVideo(row: VideoRow, withUrls: boolean): Promise<Video> {
+async function toVideo(row: VideoRow, withUrls: boolean, canDownloadFull = true): Promise<Video> {
   const ready = row.status === "ready";
   const [videoUrl, thumbUrl, avatarUrl] = await Promise.all([
     withUrls && ready ? viewUrl(videoPath(row.id, row.secret, row.ext)) : null,
@@ -73,7 +73,8 @@ async function toVideo(row: VideoRow, withUrls: boolean): Promise<Video> {
     archived: row.archived_at !== null,
     owner: { id: row.owner_id, name: row.owner_name, email: row.owner_email, avatarUrl },
     videoUrl,
-    downloadUrl: videoUrl ? downloadUrl(videoUrl) : null,
+    // A trim hides parts in the player; don't hand viewers a one-click download of the uncut file.
+    downloadUrl: videoUrl && (canDownloadFull || !trimOf(row)) ? downloadUrl(videoUrl) : null,
     thumbUrl,
   };
 }
@@ -119,12 +120,25 @@ async function isUnlocked(row: VideoRow): Promise<boolean> {
   return (await cookies()).get(unlockCookie(row.id))?.value === unlockValue(row);
 }
 
-export async function unlockVideo(id: string, password: string) {
+const ATTEMPT_WINDOW = "15 minutes";
+const MAX_ATTEMPTS_PER_CLIENT = 8;
+const MAX_ATTEMPTS_PER_VIDEO = 60;
+
+export async function unlockVideo(id: string, password: string, clientIp: string) {
   const row = await rowById(id);
   if (!row || row.privacy !== "link" || !row.link_password_hash) throw new HttpError(404, "This video doesn't exist");
   if (row.link_expires_at && new Date(row.link_expires_at).getTime() < Date.now()) throw new LinkLockedError("expired");
+  const db = sql();
+  const clientKey = createHmac("sha256", authSecret()).update(`ip:${clientIp}`).digest("hex");
+  const [counts] = await db`
+    select count(*) filter (where client_key = ${clientKey}) as mine, count(*) as total
+    from unlock_attempts where video_id = ${id} and at > now() - ${ATTEMPT_WINDOW}::interval`;
+  if (Number(counts.mine) >= MAX_ATTEMPTS_PER_CLIENT || Number(counts.total) >= MAX_ATTEMPTS_PER_VIDEO) {
+    throw new HttpError(429, "Too many wrong passwords. Try again in 15 minutes.");
+  }
   if (!(await verifyPassword(password, row.link_password_hash))) {
-    await new Promise((r) => setTimeout(r, 400)); // slow down guessing
+    await db`insert into unlock_attempts (video_id, client_key) values (${id}, ${clientKey})`;
+    db`delete from unlock_attempts where at < now() - interval '1 day'`.catch(() => {});
     throw new HttpError(403, "That password isn't right");
   }
   (await cookies()).set(unlockCookie(id), unlockValue(row), {
@@ -147,7 +161,7 @@ export async function getVideoFor(id: string, user: CurrentUser | null): Promise
   if (!row) throw new HttpError(404, "This video doesn't exist");
   const access = await accessFor(row, user);
   if (!access) throw new HttpError(user ? 403 : 401, user ? "You don't have access to this video" : "Sign in to watch this video");
-  return { video: await toVideo(row, true), access };
+  return { video: await toVideo(row, true, access === "owner"), access };
 }
 
 export async function videoExists(id: string): Promise<boolean> {
@@ -269,7 +283,7 @@ export async function updateVideo(id: string, user: CurrentUser, patch: VideoPat
   if (patch.linkPassword !== undefined) {
     if (patch.linkPassword === null || patch.linkPassword === "") await db`update videos set link_password_hash = null where id = ${id}`;
     else {
-      if (patch.linkPassword.length < 4) throw new HttpError(400, "Use a password of at least 4 characters");
+      if (patch.linkPassword.length < 6) throw new HttpError(400, "Use a password of at least 6 characters");
       await db`update videos set link_password_hash = ${await hashPassword(patch.linkPassword.slice(0, 200))} where id = ${id}`;
     }
   }
@@ -340,12 +354,18 @@ export async function viewerStats(id: string, user: CurrentUser): Promise<Viewer
   const row = await requireOwned(id, user);
   const length = (trimOf(row) ? trimOf(row)!.endMs - trimOf(row)!.startMs : row.duration_ms) || 1;
   const pct = (ms: number) => Math.min(100, Math.round((ms / length) * 100));
+  // Names are shown only for people the owner already shares a workspace with (or invited by email);
+  // anyone else who happened to be signed in elsewhere is counted as anonymous.
   const rows = await sql()`
-    select v.user_id, v.max_position_ms, v.last_seen_at, u.name, u.email, u.avatar_path
+    select v.max_position_ms, v.last_seen_at, u.name, u.email, u.avatar_path,
+      (u.id is not null and (
+        exists (select 1 from memberships m where m.user_id = u.id and m.workspace_id = ${row.workspace_id})
+        or exists (select 1 from video_access a where a.video_id = v.video_id and a.email = u.email)
+      )) as known
     from video_views v left join users u on u.id = v.user_id
     where v.video_id = ${id} order by v.last_seen_at desc limit 500`;
-  const signedIn = rows.filter((r) => r.user_id);
-  const anon = rows.filter((r) => !r.user_id);
+  const signedIn = rows.filter((r) => r.known);
+  const anon = rows.filter((r) => !r.known);
   const viewers = await Promise.all(
     signedIn.map(async (r) => ({
       name: r.name as string,

@@ -59,7 +59,7 @@ export function ViewersDialog({ videoId, onClose }: { videoId: string; onClose: 
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium">{pluralize(stats.anonymous.count, "anonymous viewer")}</p>
-                <p className="text-[13px] text-ink-3">Watched without signing in · average shown</p>
+                <p className="text-[13px] text-ink-3">Not signed in, or from outside your workspace · average shown</p>
               </div>
               <Progress percent={stats.anonymous.avgPercent} />
             </li>

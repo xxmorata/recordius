@@ -23,6 +23,7 @@ export function LinkGate({ videoId, reason, compact = false }: { videoId: string
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
+      setPassword("");
     }
   }
 

@@ -29,7 +29,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
         url,
         type: "video.other",
         images: video.thumbUrl ? [{ url: video.thumbUrl, width: 1280, height: 720 }] : [{ url: `${appUrl()}/og-base.png`, width: 1200, height: 630 }],
-        videos: video.videoUrl && video.privacy === "link" ? [{ url: video.videoUrl, type: video.mimeType.split(";")[0] }] : undefined,
+        // No og:video for trimmed videos: link previews would play the uncut file.
+        videos: video.videoUrl && video.privacy === "link" && !video.trim ? [{ url: video.videoUrl, type: video.mimeType.split(";")[0] }] : undefined,
       },
       twitter: { card: video.thumbUrl ? "summary_large_image" : "summary", title: video.title },
     };

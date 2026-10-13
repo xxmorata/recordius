@@ -187,7 +187,9 @@ export function TrimEditor({ src, poster, totalMs, initial, onCancel, onSave }: 
         </div>
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-[13px] text-ink-3">Nothing is deleted — viewers only see the selection, and you can undo this anytime. Download keeps the full file.</p>
+          <p className="max-w-md text-[13px] text-ink-3">
+            The player shows only the selection and viewers can’t download the file. The cut parts aren’t deleted from it, though — to remove something sensitive for good, edit the file and upload it again.
+          </p>
           <div className="flex gap-2">
             {!full && (
               <Button
