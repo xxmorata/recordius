@@ -31,7 +31,24 @@ macOS asks for three things, once:
 
 System audio uses macOS's built-in loopback (macOS 13+) and needs no extra driver; if it isn't available on your Mac, the recording continues without it and you get a notification.
 
-**Updates keep your permissions.** The app updates itself through *Settings → Check for updates*; this replaces the app code inside the app's support folder without touching the signed application bundle, so macOS does not ask again. (Installing a new DMG over the old app *does* re-ask, because the bundle changes.)
+**Updates keep your permissions.** macOS ties the Screen Recording permission to the app's code-signing identity. Recordius releases are signed with one stable certificate, and in-app updates (*Settings → Check for updates*) don't touch the signed bundle at all, so you are asked exactly once — not after every update, and not after installing a newer DMG.
+
+If you build the app yourself, create your own certificate once so your builds behave the same way (any self-signed one works):
+
+```bash
+# one-time: creates "Recordius Code Signing" in its own keychain
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes -subj "/CN=Recordius Code Signing" \
+  -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning" \
+  -keyout /tmp/rcd.key -out /tmp/rcd.crt
+openssl pkcs12 -export -inkey /tmp/rcd.key -in /tmp/rcd.crt -name "Recordius Code Signing" -passout pass:recordius -out /tmp/rcd.p12
+KC=~/Library/Keychains/recordius-signing.keychain-db
+security create-keychain -p recordius "$KC" && security unlock-keychain -p recordius "$KC"
+security import /tmp/rcd.p12 -k "$KC" -P recordius -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k recordius "$KC"
+security list-keychains -d user -s "$KC" login.keychain-db
+```
+
+`npm run package` picks the certificate up automatically; in GitHub Actions put the `.p12` (base64) and its password into the `MAC_SIGNING_P12` / `MAC_SIGNING_P12_PASSWORD` secrets. Without a certificate builds are ad-hoc signed and every build is a "new app" to macOS.
 
 ## Recording
 
