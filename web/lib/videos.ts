@@ -130,17 +130,24 @@ export async function unlockVideo(id: string, password: string, clientIp: string
   if (row.link_expires_at && new Date(row.link_expires_at).getTime() < Date.now()) throw new LinkLockedError("expired");
   const db = sql();
   const clientKey = createHmac("sha256", authSecret()).update(`ip:${clientIp}`).digest("hex");
-  const [counts] = await db`
-    select count(*) filter (where client_key = ${clientKey}) as mine, count(*) as total
+  // Record the attempt first, then count — in one statement, so concurrent guesses all see each other.
+  const [attempt] = await db`
+    with ins as (insert into unlock_attempts (video_id, client_key) values (${id}, ${clientKey}) returning id)
+    select (select id from ins) as id,
+      1 + count(*) filter (where client_key = ${clientKey}) as mine,
+      1 + count(*) as total
     from unlock_attempts where video_id = ${id} and at > now() - ${ATTEMPT_WINDOW}::interval`;
-  if (Number(counts.mine) >= MAX_ATTEMPTS_PER_CLIENT || Number(counts.total) >= MAX_ATTEMPTS_PER_VIDEO) {
+  const mine = Number(attempt.mine);
+  // The per-video cap only applies to clients that have already failed here, so someone hammering a
+  // link can't lock out a viewer who types the right password the first time.
+  if (mine > MAX_ATTEMPTS_PER_CLIENT || (mine > 1 && Number(attempt.total) > MAX_ATTEMPTS_PER_VIDEO)) {
     throw new HttpError(429, "Too many wrong passwords. Try again in 15 minutes.");
   }
   if (!(await verifyPassword(password, row.link_password_hash))) {
-    await db`insert into unlock_attempts (video_id, client_key) values (${id}, ${clientKey})`;
     db`delete from unlock_attempts where at < now() - interval '1 day'`.catch(() => {});
     throw new HttpError(403, "That password isn't right");
   }
+  await db`delete from unlock_attempts where id = ${attempt.id}`;
   (await cookies()).set(unlockCookie(id), unlockValue(row), {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

@@ -52,6 +52,7 @@ Put it behind HTTPS (Caddy, nginx, Traefik, a cloud load balancer). `APP_URL` mu
 | `BLOB_READ_WRITE_TOKEN` | yes | Read-write token of a **private** Vercel Blob store. Set automatically when the store is created from the Vercel dashboard. |
 | `AUTH_SECRET` | yes | Signs sessions and sign-in links. Long random string. Changing it signs everyone out. |
 | `APP_URL` | on non-Vercel hosts | Public origin, e.g. `https://recordius.example.com`. On Vercel the production domain is detected. |
+| `TRUSTED_PROXY_HOPS` | no | Self-hosted only: how many reverse proxies add an `X-Forwarded-For` entry in front of the app (default `1`). Used to find the real client IP for rate limiting password attempts. |
 | `ALLOW_OPEN_SIGNUP` | no | `true` lets anyone create their own workspace on this server. Default: invite-only. |
 
 ## Database
