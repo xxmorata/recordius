@@ -77,6 +77,7 @@ Migrations only add tables and columns, so an older deployment keeps working aga
 ```
 videos/<id>/<secret>/video.mp4   the recording (multipart-uploaded while recording)
 videos/<id>/<secret>/thumb.jpg   poster frame
+videos/<id>/<secret>/thumb-<nonce>.jpg   custom thumbnail (a frame the owner picked)
 avatars/<userId>/<nonce>.jpg     profile pictures
 ```
 
@@ -99,4 +100,6 @@ avatars/<userId>/<nonce>.jpg     profile pictures
 
 - Max video size is 20 GB per recording (set in `web/lib/blob.ts`).
 - Share-page video URLs are valid for 6 hours; the page refreshes them in the background.
-- Desktop app uploads are chunked in 5 MB parts, 3 in parallel; on a bad connection it finishes the upload from the local copy when you stop.
+- Desktop app uploads are chunked in 5 MB parts, 3 in parallel; on a bad connection it finishes the upload from the local copy when you stop, and keeps retrying (also after a restart) until it's done.
+- Link previews (oEmbed, `og:image`) are only offered for videos anyone can watch: *Anyone with the link*, no password, not expired. Everything else shows a plain link.
+- Comments are visible to workspace members and invited people only — never to anonymous viewers of a public link.

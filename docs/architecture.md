@@ -22,7 +22,7 @@
 1. **Start** — the desktop app acquires the capture streams (screen via `desktopCapturer`, camera, mic, optional system-audio loopback) and *in parallel* calls `POST /api/videos`. The server inserts a `videos` row (`status = recording`, privacy = workspace default, a random `secret` path segment) and returns the share URL plus two **client upload tokens**, each restricted to one pathname (`videos/<id>/<secret>/video.mp4` and `…/thumb.jpg`), to `video/*` or `image/jpeg`, and to 12 hours. This mirrors Loom, which hands the recorder temporary per-video S3 credentials before the first frame.
 2. **Countdown** — 3-2-1 overlay (content-protected, so it is not captured).
 3. **Recording** — `MediaRecorder` emits a chunk every second (H.264/AAC MP4 when the OS provides it). Each chunk is appended to a local file in `~/Movies/Recordius` *and* packed into 5 MB parts that are uploaded immediately as a multipart upload (3 in parallel, with retries). Loom does the same with HLS segments.
-4. **Stop** — the link is copied and opened right away. The uploader flushes the last part, completes the multipart upload and calls `POST /api/videos/:id/complete` with duration and size (`status = ready`). The share page polls `GET /api/videos/:id` every 2.5 s until then. If the live upload broke, the whole local file is uploaded instead; if that fails too, the recording is listed under *Retry failed uploads*.
+4. **Stop** — the link is copied and opened right away. The uploader flushes the last part, completes the multipart upload and calls `POST /api/videos/:id/complete` with duration and size (`status = ready`). The share page polls `GET /api/videos/:id` every 2.5 s until then. If the live upload broke, the whole local file is uploaded instead. If that fails too (or the app quits mid-upload), the recording stays in `pending-uploads.json` in the app's data folder: the app retries on start, every 5 minutes and after the Mac wakes up, asking `POST /api/videos/:id/upload-token` for fresh upload tokens (the original ones expire after 12 hours). A video deleted on the web meanwhile (404) or already finished (409) is dropped from the queue.
 5. **Thumbnail** — a frame is grabbed ~1 s into the recording and uploaded with the second token; `POST /api/videos/:id/thumbnail` marks it.
 
 ## Access control
@@ -58,7 +58,7 @@ Loom's desktop app (`Loom.app` 0.379, Electron) was studied with [REA](https://g
 | `CompleteVideo` mutation on stop | `POST /api/videos/:id/complete` |
 | `openSharePageAndCopyUrl`: clipboard + open browser | identical |
 | Share URL `/share/<32 hex>` | identical shape |
-| Local copies for recovery (`RecoverVideo`) | `~/Movies/Recordius` + *Retry failed uploads* |
+| Local copies for recovery (`RecoverVideo`) | `~/Movies/Recordius` + automatic retry queue |
 | Recorder panel: source row, camera row with On/Off, mic row, big *Start recording* button, footer actions; vertical control bar on the left; camera bubble recorded as part of the screen | same layout and copy, minus features Recordius doesn't have (effects, notes, drawing, confetti) |
 
 Nothing from Loom's code or assets is used; only its behaviour was reproduced.

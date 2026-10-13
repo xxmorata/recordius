@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Loader2, Maximize, Minimize, Pause, PictureInPicture2, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
+import { Keyboard, Loader2, Maximize, Minimize, Pause, PictureInPicture2, Play, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 import { cx } from "./ui";
 import { formatDuration } from "@/lib/format";
 
@@ -12,7 +12,12 @@ export type PlayerHandle = {
   captureFrame: () => Promise<Blob>;
   /** Position on the (trimmed) timeline, in seconds. */
   currentTime: () => number;
+  /** Jump to a position on the (trimmed) timeline and play from there. */
+  seekTo: (seconds: number) => void;
 };
+
+/** A point on the timeline, e.g. a comment. */
+export type PlayerMarker = { id: string; seconds: number; label: string };
 
 type Props = {
   src: string;
@@ -25,15 +30,28 @@ type Props = {
   onFirstPlay?: () => void;
   /** Seconds on the trimmed timeline, on every time update. */
   onTime?: (seconds: number) => void;
+  markers?: PlayerMarker[];
   className?: string;
 };
+
+const SHORTCUTS: Array<[string, string]> = [
+  ["Space / K", "Play or pause"],
+  ["← / →", "Back / forward 5 seconds"],
+  ["J / L", "Back / forward 10 seconds"],
+  ["↑ / ↓", "Volume up / down"],
+  ["M", "Mute"],
+  ["F", "Full screen"],
+  ["< / >", "Slower / faster"],
+  ["0 – 9", "Jump to 0% – 90%"],
+  ["?", "Show these shortcuts"],
+];
 
 /**
  * Loom-style player: custom controls, keyboard shortcuts, speed, PiP, fullscreen, scrubbing with preview time.
  * Everything the viewer sees works on a "virtual" timeline that starts at the trim start and ends at the
  * trim end, so a trimmed video looks and behaves exactly like a shorter one.
  */
-export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, className }, ref) {
+export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, markers, className }, ref) {
   const root = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -55,6 +73,7 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const [pipAvailable, setPipAvailable] = useState(false);
+  const [help, setHelp] = useState(false);
 
   const base = trim ? trim.startMs / 1000 : 0;
   const end = trim ? Math.min(trim.endMs / 1000, fileDuration || Infinity) : fileDuration;
@@ -66,6 +85,13 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
 
   useImperativeHandle(ref, () => ({
     currentTime: () => Math.max(0, (video.current?.currentTime ?? 0) - bounds.current.base),
+    seekTo: (seconds: number) => {
+      const v = video.current;
+      if (!v) return;
+      seek(seconds);
+      v.play().catch(() => {});
+      root.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    },
     captureFrame: () =>
       new Promise<Blob>((resolve, reject) => {
         const v = video.current;
@@ -159,10 +185,20 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
       if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName) && e.key === " ") return;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
       if (document.querySelector("dialog[open]")) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser shortcuts (⌘L, ⌘F…) alone
       const v = video.current;
       if (!v) return;
       const now = v.currentTime - bounds.current.base;
       const key = e.key.toLowerCase();
+      if (key === "?") {
+        e.preventDefault();
+        setHelp((h) => !h);
+        return;
+      }
+      if (key === "escape") {
+        setHelp(false);
+        return;
+      }
       if (key === " " || key === "k") {
         e.preventDefault();
         toggle();
@@ -327,9 +363,23 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
               style={{ left: `${progress}%` }}
             />
           </div>
+          {duration > 0 &&
+            markers?.map((m) =>
+              m.seconds <= duration ? (
+                <span
+                  key={m.id}
+                  className="pointer-events-none absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white ring-2 ring-accent"
+                  style={{ left: `${(m.seconds / duration) * 100}%` }}
+                />
+              ) : null,
+            )}
           {hover && (
-            <span className="pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 rounded bg-ink px-1.5 py-0.5 text-xs tabular-nums" style={{ left: hover.x }}>
-              {formatDuration(hover.t * 1000)}
+            <span className="pointer-events-none absolute bottom-full mb-2 max-w-64 -translate-x-1/2 rounded bg-ink px-1.5 py-0.5 text-xs" style={{ left: Math.min(Math.max(hover.x, 40), (bar.current?.clientWidth ?? 0) - 40) }}>
+              <span className="tabular-nums">{formatDuration(hover.t * 1000)}</span>
+              {(() => {
+                const near = duration ? markers?.find((m) => Math.abs(m.seconds - hover.t) <= duration * 0.012) : null;
+                return near ? <span className="mt-0.5 block truncate text-white/80">{near.label}</span> : null;
+              })()}
             </span>
           )}
         </div>
@@ -368,6 +418,11 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
             {formatDuration(time * 1000)} <span className="text-white/50">/ {formatDuration(duration * 1000)}</span>
           </span>
           <div className="flex-1" />
+          <span className="hidden sm:inline">
+            <Ctl onClick={() => setHelp((h) => !h)} label="Keyboard shortcuts (?)">
+              <Keyboard className="size-5" />
+            </Ctl>
+          </span>
           <SpeedMenu value={speed} onChange={(s) => { video.current!.playbackRate = s; setSpeed(s); }} />
           {pipAvailable && (
             <Ctl
@@ -386,6 +441,29 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
           </Ctl>
         </div>
       </div>
+
+      {help && (
+        <div className="absolute inset-0 z-10 grid place-items-center bg-black/70 p-4 backdrop-blur-[2px]" onClick={() => setHelp(false)}>
+          <div className="animate-pop w-full max-w-sm rounded-2xl bg-ink/95 p-5 shadow-[var(--shadow-pop)]" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Keyboard shortcuts">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="font-semibold">Keyboard shortcuts</p>
+              <button type="button" onClick={() => setHelp(false)} className="rounded-lg p-1 text-white/70 hover:bg-white/15 hover:text-white" aria-label="Close">
+                <X className="size-4" />
+              </button>
+            </div>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">
+              {SHORTCUTS.map(([keys, what]) => (
+                <div key={keys} className="contents">
+                  <dt>
+                    <kbd className="rounded-md bg-white/15 px-1.5 py-0.5 font-sans text-xs font-medium whitespace-nowrap">{keys}</kbd>
+                  </dt>
+                  <dd className="text-white/80">{what}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

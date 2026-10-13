@@ -44,3 +44,12 @@ export type ViewerStats = { viewers: Viewer[]; anonymous: { count: number; avgPe
 export type Member = { id: string; name: string; email: string; role: Role; avatarPath: string | null; joinedAt: number; videos: number };
 
 export type Invite = { id: string; role: Role; uses: number; maxUses: number | null; expiresAt: number | null; createdAt: number; createdBy: string | null };
+
+export type Comment = {
+  id: string;
+  body: string;
+  atMs: number | null;
+  createdAt: number;
+  author: { id: string; name: string; avatarUrl: string | null };
+  canDelete: boolean;
+};

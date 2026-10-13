@@ -19,11 +19,13 @@ const {
   systemPreferences,
   nativeImage,
   dialog,
+  powerMonitor,
 } = require("electron");
 const config = require("./config");
 const api = require("./api");
 const updater = require("./updater");
-const { LiveUploader, uploadThumbnail } = require("./uploader");
+const { LiveUploader, uploadFile, uploadThumbnail } = require("./uploader");
+const library = require("./library");
 
 const APP_DIR = path.join(__dirname, "..");
 const RENDERER = path.join(APP_DIR, "renderer");
@@ -42,7 +44,9 @@ const log = (...args) => process.env.RECORDIUS_DEBUG && console.log("[recordius]
 /** @type {"idle"|"preparing"|"recording"|"paused"|"stopping"} */
 let state = "idle";
 let rec = null; // active recording session
-const failedUploads = []; // recordings kept locally whose upload failed
+const uploadingIds = new Set(); // uploads in progress right now (live finish or retry)
+let retrying = null;
+let pendingCount = 0; // cached: the tray menu is rebuilt twice a second while recording
 const win = { panel: null, camera: null, controls: null, countdown: null, recorder: null };
 let tray = null;
 let trayTimer = null;
@@ -266,7 +270,7 @@ function refreshTray() {
     { label: "Open my library", enabled: config.isConnected(), click: () => openLibrary() },
     { label: "Settings…", click: () => showPanel("settings") },
     { label: "Show recordings folder", click: () => shell.openPath(config.RECORDINGS_DIR) },
-    ...(failedUploads.length ? [{ label: `Retry failed uploads (${failedUploads.length})`, click: () => retryFailedUploads() }] : []),
+    ...(pendingCount ? [{ label: `Retry failed uploads (${pendingCount})`, click: () => retryFailedUploads({ manual: true }) }] : []),
     { type: "separator" },
     { label: "Quit Recordius", role: "quit" },
   ];
@@ -322,7 +326,8 @@ async function connect(server, token) {
   config.saveToken(token);
   config.save({ server: me.serverUrl ? normalizeServer(me.serverUrl) ?? base : base, account: { name: me.user.name, email: me.user.email, workspace: me.workspace.name, avatarUrl: me.user.avatarUrl } });
   win.panel?.webContents.send("account:changed", accountInfo());
-  refreshTray();
+  pendingChanged();
+  setTimeout(() => failedUploads().length && retryFailedUploads(), 1000);
   notify("Recordius is connected", `${me.user.name} · ${me.workspace.name}. Press ⌘⇧R to record.`);
   return me;
 }
@@ -342,6 +347,7 @@ async function refreshAccount() {
       // Token revoked from the web app.
       config.clearToken();
       win.panel?.webContents.send("account:changed", accountInfo());
+      pendingChanged();
       notify("Recordius was disconnected", "This Mac was removed from your account. Connect it again from the web app.");
     }
   }
@@ -351,7 +357,7 @@ function signOut() {
   config.clearToken();
   config.save({ account: null });
   win.panel?.webContents.send("account:changed", accountInfo());
-  refreshTray();
+  pendingChanged();
 }
 
 function handleDeepLink(raw) {
@@ -511,34 +517,104 @@ async function stopRecording() {
 }
 
 async function finishUpload(sessionRec, durationMs) {
+  const { video, localPath } = sessionRec;
+  // Written before the upload finishes, so quitting or a crash mid-upload is retried on the next start.
+  library.addPending({ id: video.id, server: api.serverUrl(), account: config.load().account?.email ?? null, localPath, durationMs, title: video.title, shareUrl: video.shareUrl, contentType: sessionRec.mimeType?.split(";")[0], failedAt: Date.now() });
+  uploadingIds.add(video.id);
   try {
     await sessionRec.uploader.finish();
-    await api.completeVideo(sessionRec.video.id, durationMs, sessionRec.uploader.totalBytes);
-    notify("Your video is ready", sessionRec.video.title ?? sessionRec.video.shareUrl, () => shell.openExternal(sessionRec.video.shareUrl));
+    await api.completeVideo(video.id, durationMs, sessionRec.uploader.totalBytes);
+    library.removePending(video.id);
+    library.markUploaded(video.id, localPath);
+    notify("Your video is ready", video.title ?? video.shareUrl, () => shell.openExternal(video.shareUrl));
     win.panel?.webContents.send("panel:recent-changed");
-    const i = failedUploads.indexOf(sessionRec);
-    if (i >= 0) failedUploads.splice(i, 1);
   } catch (err) {
     console.error("[main] upload failed", err);
-    sessionRec.durationMs = durationMs;
-    if (!failedUploads.includes(sessionRec)) failedUploads.push(sessionRec);
-    notify("Upload failed", `Saved locally. Use “Retry failed uploads” in the menu bar. (${err.message})`);
+    library.updatePending(video.id, { failedAt: Date.now(), error: err.message });
+    notify("Upload didn’t finish", "Your recording is saved on this Mac. Recordius will keep retrying — or click Retry in the app.");
+  } finally {
+    uploadingIds.delete(video.id);
   }
-  refreshTray();
+  pendingChanged();
 }
 
-async function retryFailedUploads() {
-  for (const sessionRec of [...failedUploads]) {
-    try {
-      await sessionRec.uploader.uploadLocalFile();
-      await api.completeVideo(sessionRec.video.id, sessionRec.durationMs, fs.statSync(sessionRec.localPath).size);
-      failedUploads.splice(failedUploads.indexOf(sessionRec), 1);
-      notify("Upload finished", sessionRec.video.shareUrl, () => shell.openExternal(sessionRec.video.shareUrl));
-    } catch (err) {
-      notify("Retry failed", err.message);
-    }
-  }
+/** Failed uploads of the account this Mac is connected to now (other accounts' stay queued for them). */
+function failedUploads() {
+  if (!config.isConnected()) return [];
+  const server = api.serverUrl();
+  const account = config.load().account?.email ?? null;
+  return library.pending().filter((p) => p.server === server && (!p.account || !account || p.account === account) && !uploadingIds.has(p.id));
+}
+
+function pendingChanged() {
+  pendingCount = failedUploads().length;
   refreshTray();
+  win.panel?.webContents.send("panel:pending", pendingCount);
+}
+
+/**
+ * Uploads recordings whose upload failed, from the local copy, with fresh upload tokens.
+ * Runs on start, every few minutes and from the Retry button; only one run at a time.
+ */
+function retryFailedUploads({ manual = false } = {}) {
+  if (retrying) return retrying;
+  retrying = (async () => {
+    let done = 0;
+    let lastError = null;
+    const attempted = new Set();
+    // Re-read the queue after each item: uploads that fail while this runs are picked up too.
+    for (let p = failedUploads()[0]; p; p = failedUploads().find((x) => !attempted.has(x.id))) {
+      attempted.add(p.id);
+      if (state !== "idle" && state !== "stopping" && !manual) break; // don't compete with a live recording for bandwidth
+      if (!fs.existsSync(p.localPath)) {
+        library.removePending(p.id); // the only copy is gone; nothing left to upload
+        continue;
+      }
+      uploadingIds.add(p.id);
+      try {
+        let upload;
+        try {
+          ({ upload } = await api.uploadToken(p.id));
+        } catch (err) {
+          // Only explicit answers drop an entry: a plain 404 could also be an older server without this route.
+          if (err.code === "video_gone") {
+            library.removePending(p.id); // deleted on the web
+            continue;
+          }
+          if (err.code === "already_uploaded") {
+            library.removePending(p.id); // finished after all (e.g. the response got lost)
+            library.markUploaded(p.id, p.localPath);
+            continue;
+          }
+          throw err;
+        }
+        const ext = path.extname(p.localPath).slice(1);
+        await uploadFile({ pathname: upload.videoPathname, token: upload.videoToken, access: upload.access ?? "private", contentType: p.contentType ?? (ext === "webm" ? "video/webm" : "video/mp4"), localPath: p.localPath });
+        await api.completeVideo(p.id, p.durationMs, fs.statSync(p.localPath).size);
+        library.removePending(p.id);
+        library.markUploaded(p.id, p.localPath);
+        done++;
+        notify("Upload finished", p.title ?? p.shareUrl, () => shell.openExternal(p.shareUrl));
+      } catch (err) {
+        lastError = err;
+        library.updatePending(p.id, { failedAt: Date.now(), error: err.message });
+      } finally {
+        uploadingIds.delete(p.id);
+      }
+    }
+    if (done) win.panel?.webContents.send("panel:recent-changed");
+    if (manual && lastError) notify("Couldn’t upload yet", lastError.status === 0 ? "You seem to be offline. Recordius will try again automatically." : lastError.message);
+    return { done, remaining: failedUploads().length, error: lastError?.message ?? null };
+  })().finally(() => {
+    retrying = null;
+    pendingChanged();
+  });
+  return retrying;
+}
+
+function cleanUpLocalCopies() {
+  const deleted = library.cleanUpLocalCopies({ keepDays: Number(config.load().keepLocalDays) || 0, activePath: rec?.localPath ?? null });
+  if (deleted) log(`removed ${deleted} old local recordings`);
 }
 
 async function cancelRecording({ restart = false } = {}) {
@@ -601,6 +677,7 @@ ipcMain.handle("panel:init", async () => ({
   packaged: app.isPackaged,
   loginItem: app.isPackaged ? app.getLoginItemSettings().openAtLogin : false,
   state,
+  pendingUploads: failedUploads().length,
   shortcuts: { toggle: "⌘⇧R", pause: "⌘⇧P" },
 }));
 
@@ -666,19 +743,24 @@ ipcMain.on("panel:camera-preview", (_e, { enabled, cameraId }) => {
 });
 ipcMain.on("panel:start", (_e, opts) => startRecording(opts));
 ipcMain.on("panel:settings", (_e, patch) => {
-  const allowed = ["source", "sourceId", "cameraId", "micId", "systemAudio", "mirrorCamera", "countdown", "quality", "cameraSize"];
+  const allowed = ["source", "sourceId", "cameraId", "micId", "systemAudio", "mirrorCamera", "countdown", "quality", "cameraSize", "keepLocalDays"];
+  if ("keepLocalDays" in patch && ![0, 7, 30].includes(patch.keepLocalDays)) delete patch.keepLocalDays;
   const clean = Object.fromEntries(Object.entries(patch).filter(([k]) => allowed.includes(k)));
   config.save(clean);
   if ("mirrorCamera" in clean) win.camera?.webContents.send("camera:mirror", clean.mirrorCamera);
   if ("cameraSize" in clean) resizeCamera(clean.cameraSize);
+  if ("keepLocalDays" in clean) cleanUpLocalCopies();
 });
+ipcMain.handle("panel:retry-uploads", () => retryFailedUploads({ manual: true }));
 ipcMain.on("panel:login-item", (_e, enabled) => app.isPackaged && app.setLoginItemSettings({ openAtLogin: Boolean(enabled) }));
 ipcMain.on("panel:close", () => hidePanel());
 ipcMain.on("panel:library", () => openLibrary());
 ipcMain.handle("panel:recent", async () => {
   const server = api.serverUrl();
   const { videos } = await api.recent(4);
+  const waiting = new Set(library.pending().map((p) => p.id));
   return videos.map((v) => ({
+    waiting: v.status !== "ready" && waiting.has(v.id),
     id: v.id,
     title: v.title,
     status: v.status,
@@ -817,6 +899,7 @@ app.whenReady().then(async () => {
 
   tray = new Tray(trayIcon());
   tray.setToolTip("Recordius");
+  pendingCount = failedUploads().length;
   refreshTray();
   ensureRecorderWindow();
   ensurePanelWindow();
@@ -835,9 +918,18 @@ app.whenReady().then(async () => {
 
   refreshAccount();
   setInterval(refreshAccount, 6 * 60 * 60 * 1000);
+
+  // Finish uploads that failed earlier (also after a crash or quitting mid-upload), then keep trying.
+  if (!E2E || process.env.RECORDIUS_E2E_RETRY) {
+    setTimeout(() => config.isConnected() && retryFailedUploads(), E2E ? 500 : 8000);
+    setInterval(() => config.isConnected() && failedUploads().length && retryFailedUploads(), 5 * 60 * 1000);
+    powerMonitor.on("resume", () => setTimeout(() => config.isConnected() && failedUploads().length && retryFailedUploads(), 15000));
+  }
+  setTimeout(cleanUpLocalCopies, 20000);
+  setInterval(cleanUpLocalCopies, 24 * 60 * 60 * 1000);
 });
 
 app.on("window-all-closed", (e) => e.preventDefault()); // menu-bar app: keep running
 app.on("will-quit", () => globalShortcut.unregisterAll());
 
-if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, hostname: os.hostname() });
+if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, hostname: os.hostname() });

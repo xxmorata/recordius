@@ -373,6 +373,136 @@ await expectStatus(r, 200, "expiry removed");
   await owner.call("DELETE", `/api/videos/${up.id}`);
 }
 
+section("comments, oEmbed, re-upload, rate-limit edge cases");
+// comments: workspace people only
+r = await anon.call("GET", `/api/videos/${video.id}/comments`);
+await expectStatus(r, 401, "anonymous can't read comments");
+r = await anon.call("POST", `/api/videos/${video.id}/comments`, { body: "spam" });
+await expectStatus(r, 401, "anonymous can't comment");
+r = await member.call("POST", `/api/videos/${video.id}/comments`, { body: "Nice intro", atMs: 1200 });
+await expectStatus(r, 200, "member comments at a timestamp");
+const memberComment = r.json.id;
+r = await owner.call("POST", `/api/videos/${video.id}/comments`, { body: "General note" });
+await expectStatus(r, 200, "owner adds a general comment");
+const ownerComment = r.json.id;
+r = await owner.call("POST", `/api/videos/${video.id}/comments`, { body: "Way past the end", atMs: 99999999 });
+await expectStatus(r, 200, "timestamp past the end is accepted");
+r = await owner.call("POST", `/api/videos/${video.id}/comments`, { body: "   " });
+await expectStatus(r, 400, "empty comment rejected");
+r = await owner.call("POST", `/api/videos/${video.id}/comments`, { body: "x".repeat(4001) });
+await expectStatus(r, 400, "over-long comment rejected");
+r = await member.call("GET", `/api/videos/${video.id}/comments`);
+await expectStatus(r, 200, "member reads comments");
+{
+  const list = r.json.comments;
+  assert.equal(list.length, 3);
+  assert.equal(list[0].body, "Nice intro");
+  assert.equal(list[0].atMs, 1200);
+  assert.ok(list[1].atMs <= 4200 && list[1].atMs > 1200, "clamped to the video length");
+  assert.equal(list[2].atMs, null, "general comments come last");
+  assert.equal(list[0].canDelete, true);
+  assert.equal(list[2].canDelete, false);
+  assert.ok(!("email" in list[0].author), "no emails in comments");
+  ok("ordered by timestamp, clamped, own comments deletable");
+}
+r = await member.call("DELETE", `/api/videos/${video.id}/comments/${ownerComment}`);
+await expectStatus(r, 403, "member can't delete someone else's comment");
+r = await owner.call("DELETE", `/api/videos/${video.id}/comments/${memberComment}`);
+await expectStatus(r, 200, "video owner can delete any comment");
+r = await owner.call("DELETE", `/api/videos/${video.id}/comments/${memberComment}`);
+await expectStatus(r, 404, "deleting twice is a 404");
+r = await owner.call("DELETE", `/api/videos/${video.id}/comments/not-a-uuid`);
+await expectStatus(r, 404, "malformed comment id is a 404, not a 500");
+r = await owner.call("POST", `/api/videos/${video.id}/comments`, null);
+await expectStatus(r, 400, "null JSON body is a 400");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { privacy: "private" });
+r = await member.call("GET", `/api/videos/${video.id}/comments`);
+await expectStatus(r, 403, "losing access hides comments");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { privacy: "link" });
+r = await owner.call("GET", `/api/videos/${"0".repeat(32)}/comments`);
+await expectStatus(r, 404, "comments on a missing video");
+
+// oEmbed + stable poster: only for videos anyone can watch
+const shareLink = `${BASE}/share/${video.id}`;
+r = await anon.call("GET", `/api/oembed?url=${encodeURIComponent(shareLink)}&maxwidth=640`);
+await expectStatus(r, 200, "oEmbed for a public link");
+assert.equal(r.json.type, "video");
+assert.equal(r.json.width, 640);
+assert.equal(r.json.height, 360);
+assert.ok(r.json.html.includes(`/embed/${video.id}`));
+assert.ok(r.json.thumbnail_url.endsWith(`/api/videos/${video.id}/poster`));
+ok("oEmbed returns an iframe and a stable thumbnail");
+r = await anon.call("GET", `/api/videos/${video.id}/poster`);
+assert.equal(r.status, 302);
+assert.equal((await fetch(r.headers.get("location"))).status, 200);
+ok("poster redirects to a working signed URL");
+r = await anon.call("GET", `/share/${video.id}`);
+assert.ok(r.text.includes("application/json+oembed"));
+assert.ok(r.text.includes(`/api/videos/${video.id}/poster`));
+ok("share page advertises oEmbed and the stable poster");
+r = await anon.call("GET", `/api/oembed?url=${encodeURIComponent(`https://evil.example/share/${video.id}`)}`);
+await expectStatus(r, 404, "oEmbed ignores other sites");
+r = await anon.call("GET", `/api/oembed?url=${encodeURIComponent(shareLink)}&format=xml`);
+await expectStatus(r, 501, "oEmbed XML not supported");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "secret words" });
+r = await anon.call("GET", `/api/oembed?url=${encodeURIComponent(shareLink)}`);
+await expectStatus(r, 404, "no oEmbed for password-protected links");
+r = await anon.call("GET", `/api/videos/${video.id}/poster`);
+await expectStatus(r, 404, "no poster for password-protected links");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: null, privacy: "workspace" });
+r = await anon.call("GET", `/api/oembed?url=${encodeURIComponent(shareLink)}`);
+await expectStatus(r, 404, "no oEmbed for workspace-only videos");
+r = await owner.call("GET", `/share/${video.id}`);
+assert.ok(!r.text.includes("application/json+oembed"));
+ok("workspace-only share page has no oEmbed link");
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { privacy: "link" });
+
+// re-upload tokens for the desktop app's retry
+r = await desktop.call("POST", `/api/videos/${video.id}/upload-token`);
+await expectStatus(r, 409, "no re-upload for a finished video");
+r = await anon.call("POST", `/api/videos/${video.id}/upload-token`);
+await expectStatus(r, 401, "re-upload needs sign-in");
+{
+  const fresh = (await desktop.call("POST", "/api/videos", { title: "Retry me", mimeType: "video/mp4" })).json;
+  r = await member.call("POST", `/api/videos/${fresh.id}/upload-token`);
+  await expectStatus(r, 403, "others can't get upload tokens");
+  r = await desktop.call("POST", `/api/videos/${fresh.id}/upload-token`);
+  await expectStatus(r, 200, "owner gets fresh upload tokens");
+  const up = r.json.upload;
+  assert.equal(up.videoPathname, fresh.upload.videoPathname, "same file as before");
+  await put(up.videoPathname, Buffer.alloc(1024, 7), { access: "private", token: up.videoToken, contentType: "video/mp4" });
+  ok("upload with the reissued token");
+  r = await desktop.call("POST", `/api/videos/${fresh.id}/complete`, { durationMs: 2000, size: 1024 });
+  await expectStatus(r, 200, "complete after retry");
+  r = await desktop.call("POST", `/api/videos/${fresh.id}/upload-token`);
+  await expectStatus(r, 409, "finished after retry → 409 (the app drops it from its queue)");
+  assert.equal(r.json.code, "already_uploaded");
+  await owner.call("DELETE", `/api/videos/${fresh.id}`);
+  r = await desktop.call("POST", `/api/videos/${fresh.id}/upload-token`);
+  await expectStatus(r, 404, "deleted video → 404 (the app drops it from its queue)");
+  assert.equal(r.json.code, "video_gone");
+  ok("machine-readable codes for the desktop queue");
+}
+
+// rate limit: blocked attempts don't count toward the per-video cap; IPv4-mapped IPv6 = same client
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "cap test pw" });
+{
+  const hammer = client();
+  for (let i = 0; i < 8; i++) await hammer.call("POST", `/api/videos/${video.id}/unlock`, { password: `nope${i}` }, { headers: { "x-forwarded-for": "192.0.2.50" } });
+  r = await hammer.call("POST", `/api/videos/${video.id}/unlock`, { password: "nope" }, { headers: { "x-forwarded-for": "::ffff:192.0.2.50" } });
+  await expectStatus(r, 429, "IPv4-mapped IPv6 address counts as the same client");
+  const blocked = [];
+  for (let i = 0; i < 16; i++) {
+    blocked.push(...(await Promise.all(Array.from({ length: 20 }, () => hammer.call("POST", `/api/videos/${video.id}/unlock`, { password: "nope" }, { headers: { "x-forwarded-for": "192.0.2.50" } })))));
+  }
+  assert.ok(blocked.every((b) => b.status === 429));
+  ok("320 more attempts from a blocked client are all refused");
+  const viewer = client();
+  r = await viewer.call("POST", `/api/videos/${video.id}/unlock`, { password: "cap test pw" }, { headers: { "x-forwarded-for": "198.51.100.77" } });
+  await expectStatus(r, 200, "a blocked client's attempts don't lock out a real viewer");
+}
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: null });
+
 section("library & lifecycle");
 r = await owner.call("GET", "/api/videos?scope=mine");
 assert.equal(r.json.videos.length, 1);

@@ -266,7 +266,7 @@ async function loadRecent() {
       const title = document.createElement("b");
       title.textContent = v.title;
       const sub = document.createElement("small");
-      sub.textContent = v.status === "ready" ? `${dur(v.durationMs)} · ${ago(v.createdAt)}` : v.status === "failed" ? "Upload failed" : "Uploading…";
+      sub.textContent = v.status === "ready" ? `${dur(v.durationMs)} · ${ago(v.createdAt)}` : v.waiting ? "Saved on this Mac · will upload" : v.status === "failed" ? "Upload failed" : "Uploading…";
       meta.append(title, sub);
       const copy = document.createElement("button");
       copy.className = "copy";
@@ -289,7 +289,7 @@ async function loadRecent() {
     }),
   );
   // Keep "Uploading…" rows fresh while the panel is open.
-  if (items.some((v) => v.status === "recording") && !document.hidden) recentTimer = setTimeout(loadRecent, 3000);
+  if (items.some((v) => v.status === "recording" && !v.waiting) && !document.hidden) recentTimer = setTimeout(loadRecent, 3000);
 }
 api.on("panel:recent-changed", () => loadRecent());
 
@@ -310,6 +310,7 @@ function fillSettings() {
   $("sMirror").checked = settings.mirrorCamera !== false;
   $("sQuality").value = String(settings.quality || "1080");
   $("sCameraSize").value = settings.cameraSize || "m";
+  $("sKeepLocal").value = String(settings.keepLocalDays ?? 30);
   $("loginItemRow").hidden = !init?.packaged;
   $("sLoginItem").checked = Boolean(init?.loginItem);
   $("kbdToggle").textContent = init?.shortcuts.toggle ?? "⌘⇧R";
@@ -329,6 +330,39 @@ $("mirrorCamera").onchange = (e) => {
 $("systemAudio").onchange = (e) => save({ systemAudio: e.target.checked });
 $("sQuality").onchange = (e) => save({ quality: e.target.value });
 $("sCameraSize").onchange = (e) => save({ cameraSize: e.target.value });
+$("sKeepLocal").onchange = (e) => save({ keepLocalDays: Number(e.target.value) });
+
+// ───────── uploads that didn't finish ─────────
+
+const PENDING_HINT = { 1: "It’s saved on this Mac. Recordius retries automatically.", n: "They’re saved on this Mac. Recordius retries automatically." };
+
+function renderPending(count) {
+  $("pendingBanner").hidden = !count;
+  $("pendingTitle").textContent = count === 1 ? "1 upload didn’t finish" : `${count} uploads didn’t finish`;
+  if (!$("retryUploads").disabled) $("pendingText").textContent = count === 1 ? PENDING_HINT[1] : PENDING_HINT.n;
+}
+api.on("panel:pending", (count) => {
+  if (init) init.pendingUploads = count;
+  renderPending(count);
+});
+$("retryUploads").onclick = async () => {
+  const btn = $("retryUploads");
+  btn.disabled = true;
+  btn.textContent = "Uploading…";
+  $("pendingText").textContent = "Uploading from the copy on this Mac…";
+  try {
+    const r = await api.invoke("panel:retry-uploads");
+    btn.disabled = false;
+    renderPending(r.remaining);
+    if (r.error) $("pendingText").textContent = `Not uploaded yet: ${r.error}`;
+  } catch {
+    btn.disabled = false;
+    renderPending(init?.pendingUploads ?? 0);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Retry now";
+  }
+};
 $("sLoginItem").onchange = (e) => api.send("panel:login-item", e.target.checked);
 $("openFolder").onclick = () => api.send("panel:recordings-folder");
 $("signOut").onclick = () => {
@@ -497,5 +531,6 @@ async function boot() {
   }
   setView("recorder");
   render();
+  renderPending(init.pendingUploads);
 }
 boot();

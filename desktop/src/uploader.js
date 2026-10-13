@@ -136,16 +136,7 @@ class LiveUploader {
 
   /** Fallback / recovery path: upload the whole local recording in one multipart put. */
   uploadLocalFile(onProgress) {
-    return withRetry(
-      "put local file",
-      () =>
-        put(this.pathname, fs.createReadStream(this.localPath), {
-          ...this.opts,
-          multipart: true,
-          onUploadProgress: onProgress ? (e) => onProgress(e.percentage) : undefined,
-        }),
-      4,
-    );
+    return uploadFile({ pathname: this.pathname, token: this.token, access: this.access, contentType: this.contentType, localPath: this.localPath }, onProgress);
   }
 
   abort() {
@@ -155,8 +146,24 @@ class LiveUploader {
   }
 }
 
+/** Uploads a whole file from disk (multipart, retried). Used for retries after a failed upload. */
+function uploadFile({ pathname, token, access = "private", contentType, localPath }, onProgress) {
+  return withRetry(
+    "put local file",
+    () =>
+      put(pathname, fs.createReadStream(localPath), {
+        access,
+        token,
+        contentType,
+        multipart: true,
+        onUploadProgress: onProgress ? (e) => onProgress(e.percentage) : undefined,
+      }),
+    4,
+  );
+}
+
 async function uploadThumbnail({ pathname, token, access = "private" }, jpeg) {
   return withRetry("thumbnail", () => put(pathname, jpeg, { access, token, contentType: "image/jpeg" }));
 }
 
-module.exports = { LiveUploader, uploadThumbnail, PART_SIZE };
+module.exports = { LiveUploader, uploadFile, uploadThumbnail, PART_SIZE };

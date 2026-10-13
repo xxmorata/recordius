@@ -1,9 +1,10 @@
 const config = require("./config");
 
 class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = null) {
     super(message);
     this.status = status;
+    this.code = code; // machine-readable reason from the server, when it sends one
   }
 }
 
@@ -22,7 +23,7 @@ async function call(method, route, body, { server, token } = {}) {
     throw new ApiError(0, `Can't reach ${base} (${err.message})`);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error ?? `${method} ${route} failed (${res.status})`);
+  if (!res.ok) throw new ApiError(res.status, data.error ?? `${method} ${route} failed (${res.status})`, data.code ?? null);
   return data;
 }
 
@@ -36,6 +37,8 @@ module.exports = {
   completeVideo: (id, durationMs, size) => call("POST", `/api/videos/${id}/complete`, { durationMs, size }),
   markThumbnail: (id) => call("POST", `/api/videos/${id}/thumbnail`),
   deleteVideo: (id) => call("DELETE", `/api/videos/${id}`),
+  /** Fresh upload tokens to retry an unfinished upload (code "video_gone": deleted, "already_uploaded": done). */
+  uploadToken: (id) => call("POST", `/api/videos/${id}/upload-token`),
   recent: (limit = 4) => call("GET", `/api/videos?scope=mine&limit=${limit}`),
   serverUrl: () => config.load().server?.replace(/\/$/, "") ?? null,
 };

@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { forwardRef, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
 import { initials } from "@/lib/format";
 
@@ -130,7 +130,16 @@ export type MenuItem = { label: string; icon?: ReactNode; onSelect: () => void; 
 
 export function Menu({ trigger, items, align = "end", className }: { trigger: ReactNode; items: MenuItem[]; align?: "start" | "end"; className?: string }) {
   const [open, setOpen] = useState(false);
+  const [up, setUp] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  // Open upward when there isn't room below (e.g. the last card on the page), measured before paint.
+  useLayoutEffect(() => {
+    if (!open || !menu.current || !ref.current) return setUp(false);
+    const trigger = ref.current.getBoundingClientRect();
+    const height = menu.current.offsetHeight + 8;
+    setUp(trigger.bottom + height > window.innerHeight && trigger.top - height > 0);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent | KeyboardEvent) => {
@@ -148,8 +157,9 @@ export function Menu({ trigger, items, align = "end", className }: { trigger: Re
       <div onClick={() => setOpen((o) => !o)}>{trigger}</div>
       {open && (
         <div
+          ref={menu}
           role="menu"
-          className={cx("animate-pop absolute top-full z-50 mt-1 min-w-48 rounded-xl bg-surface p-1.5 shadow-[var(--shadow-pop)]", align === "end" ? "right-0" : "left-0")}
+          className={cx("animate-pop absolute z-50 w-max max-w-[min(20rem,calc(100vw-2rem))] min-w-48", up ? "bottom-full mb-1" : "top-full mt-1", "rounded-xl bg-surface p-1.5 shadow-[var(--shadow-pop)]", align === "end" ? "right-0" : "left-0")}
         >
           {items.map((item, i) =>
             item === "separator" ? (
@@ -244,6 +254,16 @@ export async function api<T = unknown>(path: string, init?: RequestInit & { json
     body: init?.json !== undefined ? JSON.stringify(init.json) : init?.body,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error ?? `Request failed (${res.status})`);
   return data as T;
+}
+
+/** Thrown by api(): the server's message plus the HTTP status (0 = network error). */
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
 }

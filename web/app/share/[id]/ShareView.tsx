@@ -2,17 +2,17 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Archive, ArchiveRestore, Check, Clock, Download, Eye, ImageIcon, Link2, MoreHorizontal, Pencil, Scissors, Share2, Trash2 } from "lucide-react";
-import { Player, type PlayerHandle } from "@/components/Player";
+import { Player, type PlayerHandle, type PlayerMarker } from "@/components/Player";
+import { Comments } from "@/components/Comments";
 import { TrimEditor } from "@/components/TrimEditor";
 import { ViewersDialog } from "@/components/ViewersDialog";
 import { useWatchReporting } from "@/components/useWatchReporting";
 import { PrivacyIcon, ShareDialog } from "@/components/ShareDialog";
-import { RenameDialog } from "@/components/LibraryView";
 import { Avatar, Button, Dialog, Menu, api } from "@/components/ui";
 import { useToast } from "@/components/Toast";
-import { PRIVACY_LABELS, type Access, type Video } from "@/lib/types";
+import { PRIVACY_LABELS, type Access, type Comment, type Video } from "@/lib/types";
 import { formatDate, formatDuration, formatStartTime, parseStartTime, pluralize } from "@/lib/format";
 
 type Props = { initial: Video; access: Access; shareUrl: string; viewerId: string | null };
@@ -29,7 +29,9 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
   const [startAt, setStartAt] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
   const [showViewers, setShowViewers] = useState(false);
+  const [markers, setMarkers] = useState<PlayerMarker[]>([]);
   const player = useRef<PlayerHandle>(null);
+  const canComment = access !== "link";
   const canEdit = access === "owner";
   const own = video.owner.id === viewerId;
   const watch = useWatchReporting(video.id, access !== "owner");
@@ -38,13 +40,20 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
     setStartAt(parseStartTime(new URLSearchParams(window.location.search).get("t")));
   }, []);
 
-  // Like Loom, the link exists before the upload finishes: poll until it's ready.
+  // Keep the tab title in step with renames.
   useEffect(() => {
-    if (video.status !== "recording") return;
+    document.title = `${video.title} · Recordius`;
+  }, [video.title]);
+
+  // Like Loom, the link exists before the upload finishes: poll until it's ready. A failed upload can
+  // still finish later (the Mac app retries from its local copy), so keep checking, just less often.
+  useEffect(() => {
+    if (video.status === "ready") return;
     const t = setInterval(async () => {
+      if (document.hidden) return;
       const next = await api<Video>(`/api/videos/${video.id}`).catch(() => null);
-      if (next && next.status !== "recording") setVideo(next);
-    }, 2500);
+      if (next && next.status !== video.status) setVideo(next);
+    }, video.status === "recording" ? 2500 : 15000);
     return () => clearInterval(t);
   }, [video.id, video.status]);
 
@@ -132,6 +141,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
             watch.onTime(s);
           }}
           onFirstPlay={watch.onFirstPlay}
+          markers={markers}
           className="shadow-[0_20px_60px_-20px_rgba(25,28,38,0.45)]"
         />
       ) : (
@@ -140,14 +150,14 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
 
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex items-start gap-2">
-            <h1 className="text-xl font-semibold tracking-tight break-words sm:text-2xl">{video.title}</h1>
-            {canEdit && (
-              <button type="button" onClick={() => setRenaming(true)} className="mt-1 shrink-0 rounded-lg p-1.5 text-ink-4 hover:bg-surface-2 hover:text-ink" aria-label="Rename">
-                <Pencil className="size-4" />
-              </button>
-            )}
-          </div>
+          <Title
+            video={video}
+            canEdit={canEdit}
+            fresh={own && canEdit && video.source === "recording"}
+            editing={renaming}
+            setEditing={setRenaming}
+            onSave={(title) => update({ title }, "Title updated")}
+          />
           <div className="mt-3 flex items-center gap-3">
             <Avatar name={video.owner.name} url={video.owner.avatarUrl} size={40} />
             <div className="text-sm">
@@ -238,18 +248,19 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
         </div>
       )}
 
-      {showViewers && <ViewersDialog videoId={video.id} onClose={() => setShowViewers(false)} />}
-      {sharing && <ShareDialog video={video} shareUrl={shareUrl} open onClose={() => setSharing(false)} onChange={(p) => setVideo((v) => ({ ...v, ...p }))} canEdit={canEdit} />}
-      {renaming && (
-        <RenameDialog
-          title={video.title}
-          onClose={() => setRenaming(false)}
-          onSave={async (title) => {
-            await update({ title }, "Title updated");
-            setRenaming(false);
-          }}
+      {canComment && video.status === "ready" && (
+        <Comments
+          videoId={video.id}
+          position={position}
+          onSeek={(s) => player.current?.seekTo(s)}
+          onChange={(list: Comment[]) =>
+            setMarkers(list.filter((c) => c.atMs != null).map((c) => ({ id: c.id, seconds: c.atMs! / 1000, label: `${c.author.name}: ${c.body}` })))
+          }
         />
       )}
+
+      {showViewers && <ViewersDialog videoId={video.id} onClose={() => setShowViewers(false)} />}
+      {sharing && <ShareDialog video={video} shareUrl={shareUrl} open onClose={() => setSharing(false)} onChange={(p) => setVideo((v) => ({ ...v, ...p }))} canEdit={canEdit} />}
       <Dialog open={deleting} onClose={() => setDeleting(false)} title="Delete this video?" width={420}>
         <p className="text-sm text-ink-2">It will be permanently deleted and this link will stop working. This can’t be undone.</p>
         <div className="mt-6 flex justify-end gap-2">
@@ -278,7 +289,9 @@ function Processing({ status, source, thumbUrl }: { status: Video["status"]; sou
             <>
               <p className="text-lg font-medium">This upload didn’t finish</p>
               <p className="max-w-xs text-sm text-white/70">
-                {source === "upload" ? "The file didn’t finish uploading. The owner can upload it again from their library." : "The recording was saved on the owner’s Mac. They can re-upload it from the Recordius menu."}
+                {source === "upload"
+                  ? "The file didn’t finish uploading. The owner can upload it again from their library."
+                  : "The recording is saved on the owner’s Mac, and Recordius uploads it as soon as it can. This page updates by itself."}
               </p>
             </>
           ) : (
@@ -293,6 +306,104 @@ function Processing({ status, source, thumbUrl }: { status: Video["status"]; sou
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const DEFAULT_TITLE = /^Recording [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/;
+const FRESH_MS = 10 * 60 * 1000;
+
+/**
+ * The title, editable in place by the owner (click, Enter to save, Esc to cancel). Right after a
+ * recording, while it still has its default name, the field opens focused so you can just type a name.
+ */
+function Title({ video, canEdit, fresh, editing, setEditing, onSave }: { video: Video; canEdit: boolean; fresh: boolean; editing: boolean; setEditing: (v: boolean) => void; onSave: (title: string) => Promise<void> }) {
+  const [prompt, setPrompt] = useState(false);
+
+  // Client-only (time and sessionStorage), once per video per tab.
+  useEffect(() => {
+    if (!fresh || !DEFAULT_TITLE.test(video.title) || Date.now() - video.createdAt > FRESH_MS) return;
+    const key = `rcd-named-${video.id}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {}
+    setPrompt(true);
+    setEditing(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (canEdit && editing) {
+    return (
+      <TitleInput
+        initial={video.title}
+        hint={prompt ? "Give your video a name — Enter to save, Esc to keep this one." : "Enter to save · Esc to cancel"}
+        onDone={async (next) => {
+          if (next && next !== video.title) await onSave(next);
+          setEditing(false);
+          setPrompt(false);
+        }}
+      />
+    );
+  }
+  return (
+    <div className="flex items-start gap-2">
+      {canEdit ? (
+        <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words sm:text-2xl">
+          <button type="button" onClick={() => setEditing(true)} className="-mx-1 rounded-lg px-1 text-left hover:bg-surface-2" title="Click to rename">
+            {video.title}
+          </button>
+        </h1>
+      ) : (
+        <h1 className="text-xl font-semibold tracking-tight break-words sm:text-2xl">{video.title}</h1>
+      )}
+      {canEdit && (
+        <button type="button" onClick={() => setEditing(true)} className="mt-1 shrink-0 rounded-lg p-1.5 text-ink-4 hover:bg-surface-2 hover:text-ink" aria-label="Rename">
+          <Pencil className="size-4" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Mounted fresh for every edit: focused and selected before the first paint, so fast typing isn't lost. */
+function TitleInput({ initial, hint, onDone }: { initial: string; hint: string; onDone: (title: string | null) => Promise<void> }) {
+  const [value, setValue] = useState(initial);
+  const input = useRef<HTMLInputElement>(null);
+  const finished = useRef(false);
+
+  useLayoutEffect(() => {
+    input.current?.focus();
+    input.current?.select();
+  }, []);
+
+  function finish(title: string | null) {
+    if (finished.current) return;
+    finished.current = true;
+    onDone(title);
+  }
+
+  return (
+    <div>
+      <input
+        ref={input}
+        value={value}
+        maxLength={200}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => finish(value.trim() || null)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            finish(value.trim() || null);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            finish(null);
+          }
+        }}
+        aria-label="Video title"
+        className="-mx-2 w-[calc(100%+1rem)] rounded-lg border border-accent/40 bg-surface px-2 py-0.5 text-xl font-semibold tracking-tight outline-none ring-4 ring-accent/10 sm:text-2xl"
+      />
+      <p className="mt-1.5 text-[13px] text-ink-3">{hint}</p>
     </div>
   );
 }

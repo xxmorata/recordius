@@ -7,7 +7,7 @@ import { Avatar } from "@/components/ui";
 import { HttpError, currentUser } from "@/lib/auth";
 import { viewUrl } from "@/lib/blob";
 import { appUrl } from "@/lib/env";
-import { LinkLockedError, getVideoFor, videoExists } from "@/lib/videos";
+import { LinkLockedError, getVideoFor, publicPreview, videoExists } from "@/lib/videos";
 import { LinkGate } from "@/components/LinkGate";
 
 type Props = { params: Promise<{ id: string }> };
@@ -19,6 +19,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const { video } = await getVideoFor(id, await currentUser());
     const url = `${appUrl()}/share/${id}`;
+    // Publicly watchable videos get a stable poster URL (link previews cache images for a long time)
+    // and an oEmbed endpoint so Notion/Slack can embed the player.
+    const isPublic = Boolean(await publicPreview(id));
+    const poster = isPublic && video.thumbUrl ? `${appUrl()}/api/videos/${id}/poster` : video.thumbUrl;
     return {
       title: video.title,
       description: `${video.owner.name} shared a video with Recordius`,
@@ -28,11 +32,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
         description: `Watch ${video.owner.name}'s video`,
         url,
         type: "video.other",
-        images: video.thumbUrl ? [{ url: video.thumbUrl, width: 1280, height: 720 }] : [{ url: `${appUrl()}/og-base.png`, width: 1200, height: 630 }],
+        images: poster ? [{ url: poster, width: 1280, height: 720 }] : [{ url: `${appUrl()}/og-base.png`, width: 1200, height: 630 }],
         // No og:video for trimmed videos: link previews would play the uncut file.
         videos: video.videoUrl && video.privacy === "link" && !video.trim ? [{ url: video.videoUrl, type: video.mimeType.split(";")[0] }] : undefined,
       },
-      twitter: { card: video.thumbUrl ? "summary_large_image" : "summary", title: video.title },
+      twitter: { card: poster ? "summary_large_image" : "summary", title: video.title, images: poster ? [poster] : undefined },
+      alternates: isPublic ? { types: { "application/json+oembed": `${appUrl()}/api/oembed?url=${encodeURIComponent(url)}&format=json` } } : undefined,
     };
   } catch {
     return { title: "Video", robots: { index: false } };

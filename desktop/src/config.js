@@ -21,6 +21,7 @@ const DEFAULTS = {
   countdown: true,
   quality: "1080",
   cameraSize: "m",
+  keepLocalDays: 30, // local copies of uploaded recordings: 7, 30 or 0 (= keep forever)
   loginItemConfigured: false,
   updateRepo: "xxmorata/recordius",
 };

@@ -1,12 +1,13 @@
 import { sql } from "./db";
 import { createHmac } from "node:crypto";
+import { isIP } from "node:net";
 import { cookies } from "next/headers";
 import { customThumbPath, deleteFile, deletePrefix, downloadUrl, putPrivate, thumbPath, uploadTokens, videoPath, viewUrl } from "./blob";
 import { HttpError, type CurrentUser } from "./auth";
 import { VIDEO_ID_RE, hashPassword, isEmail, newVideoId, normalizeEmail, randomToken, verifyPassword } from "./ids";
 import { authSecret } from "./env";
 
-import { PRIVACY_LABELS, type Access, type LibraryScope, type Privacy, type Video, type VideoSource, type VideoStatus, type ViewerStats } from "./types";
+import { PRIVACY_LABELS, type Comment, type Access, type LibraryScope, type Privacy, type Video, type VideoSource, type VideoStatus, type ViewerStats } from "./types";
 export { PRIVACY_LABELS };
 export type { Access, LibraryScope, Privacy, Video, VideoStatus };
 
@@ -125,15 +126,34 @@ const MAX_ATTEMPTS_PER_CLIENT = 8;
 const MAX_ATTEMPTS_PER_VIDEO = 60; // for clients that already failed here
 const HARD_CAP_PER_VIDEO = 300; // for everyone: rotating IPs can't keep guessing forever
 
-/** IPv6 clients usually control a whole /64, so they're limited per /64 rather than per address. */
-function ipBucket(ip: string): string {
-  if (!ip.includes(":")) return ip;
-  const [head] = ip.split("%");
-  const parts = head.split("::");
-  const left = parts[0] ? parts[0].split(":") : [];
-  const right = parts.length > 1 && parts[1] ? parts[1].split(":") : [];
-  const full = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
-  return `${full.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
+/**
+ * Rate-limit key for an address. IPv4-mapped IPv6 (::ffff:1.2.3.4) counts as the IPv4 address; other
+ * IPv6 clients usually control a whole /64, so they're limited per /64. Anything unparsable is used as-is.
+ */
+export function ipBucket(raw: string): string {
+  let ip = raw.trim();
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(ip); // [::1]:443
+  if (bracketed) ip = bracketed[1];
+  else if (/^[\d.]+:\d+$/.test(ip)) ip = ip.slice(0, ip.lastIndexOf(":")); // 1.2.3.4:443
+  ip = ip.split("%")[0];
+  if (isIP(ip) === 4) return ip;
+  if (isIP(ip) !== 6) return raw;
+  // Expand to eight 16-bit groups (an embedded dotted quad becomes the last two).
+  let text = ip.toLowerCase();
+  const quad = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (quad) {
+    const [a, b, c, d] = quad[1].split(".").map(Number);
+    text = text.slice(0, -quad[1].length) + `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = text.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = [...left, ...Array(8 - left.length - right.length).fill("0"), ...right].map((g) => parseInt(g, 16));
+  // ::ffff:a.b.c.d (IPv4-mapped) and ::a.b.c.d (IPv4-compatible) are the IPv4 address.
+  if (groups.slice(0, 5).every((g) => g === 0) && (groups[5] === 0xffff || (groups[5] === 0 && groups[6] !== 0))) {
+    return [groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255].join(".");
+  }
+  return `${groups.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
 }
 
 export async function unlockVideo(id: string, password: string, clientIp: string) {
@@ -154,6 +174,9 @@ export async function unlockVideo(id: string, password: string, clientIp: string
   // link can't lock out a viewer who types the right password the first time.
   const total = Number(attempt.total);
   if (mine > MAX_ATTEMPTS_PER_CLIENT || (mine > 1 && total > MAX_ATTEMPTS_PER_VIDEO) || total > HARD_CAP_PER_VIDEO) {
+    // Rejected without checking the password, so it doesn't count: being blocked never adds to the
+    // video's total, and only real guesses can get near the hard cap.
+    await db`delete from unlock_attempts where id = ${attempt.id}`;
     throw new HttpError(429, "Too many wrong passwords. Try again in 15 minutes.");
   }
   if (!(await verifyPassword(password, row.link_password_hash))) {
@@ -402,4 +425,85 @@ export async function viewerStats(id: string, user: CurrentUser): Promise<Viewer
 export async function failStaleRecordings() {
   // Recordings whose desktop app never finished (crash, quit) are marked failed after a day.
   await sql()`update videos set status = 'failed' where status = 'recording' and created_at < now() - interval '1 day'`;
+}
+
+// ───────── re-upload (desktop retry after a failed or interrupted upload) ─────────
+
+/** Fresh upload tokens for a video that isn't finished yet (the original ones expire after 12 hours). */
+export async function reissueUploadTokens(id: string, user: CurrentUser) {
+  // The codes tell the desktop app it may drop the recording from its retry queue.
+  if (!(await rowById(id))) throw new HttpError(404, "This video doesn't exist", "video_gone");
+  const row = await requireOwned(id, user);
+  if (row.owner_id !== user.id) throw new HttpError(403, "Only the person who recorded this video can upload it", "not_recorder");
+  if (row.status === "ready") throw new HttpError(409, "This video has already finished uploading", "already_uploaded");
+  return uploadTokens(row.id, row.secret, row.ext);
+}
+
+// ───────── public metadata for link previews / oEmbed ─────────
+
+/** Only videos anyone can watch without a password (no account, not expired) get rich previews. */
+export async function publicPreview(id: string) {
+  const row = await rowById(id);
+  if (!row || row.status !== "ready" || row.privacy !== "link" || row.link_password_hash) return null;
+  if (row.link_expires_at && new Date(row.link_expires_at).getTime() < Date.now()) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    ownerName: row.owner_name,
+    durationMs: trimOf(row) ? trimOf(row)!.endMs - trimOf(row)!.startMs : row.duration_ms,
+    thumbPath: row.thumb_path || row.has_thumb ? (row.thumb_path ?? thumbPath(row.id, row.secret)) : null,
+  };
+}
+
+// ───────── comments ─────────
+
+const COMMENT_ACCESS: Access[] = ["owner", "member", "invited"];
+
+async function commentAccess(id: string, user: CurrentUser | null) {
+  if (!user) throw new HttpError(401, "Sign in to see comments");
+  const row = await rowById(id);
+  if (!row) throw new HttpError(404, "This video doesn't exist");
+  const access = await accessFor(row, user).catch(() => null);
+  if (!access || !COMMENT_ACCESS.includes(access)) throw new HttpError(403, "Comments are only for people in this workspace");
+  return { row, access };
+}
+
+export async function listComments(id: string, user: CurrentUser | null): Promise<Comment[]> {
+  const { access } = await commentAccess(id, user);
+  const rows = await sql()`
+    select c.id, c.body, c.at_ms, c.created_at, u.id as user_id, u.name, u.avatar_path
+    from video_comments c join users u on u.id = c.user_id
+    where c.video_id = ${id} order by coalesce(c.at_ms, 2147483647), c.created_at limit 1000`;
+  return Promise.all(
+    rows.map(async (r) => ({
+      id: r.id as string,
+      body: r.body as string,
+      atMs: r.at_ms as number | null,
+      createdAt: new Date(r.created_at).getTime(),
+      author: { id: r.user_id as string, name: r.name as string, avatarUrl: r.avatar_path ? await viewUrl(r.avatar_path) : null },
+      canDelete: r.user_id === user!.id || access === "owner",
+    })),
+  );
+}
+
+export async function addComment(id: string, user: CurrentUser | null, body: string, atMs: number | null): Promise<string> {
+  const { row } = await commentAccess(id, user);
+  const text = body.trim();
+  if (!text) throw new HttpError(400, "Write something first");
+  if (text.length > 4000) throw new HttpError(400, "Comments can be up to 4000 characters");
+  const length = (trimOf(row) ? trimOf(row)!.endMs - trimOf(row)!.startMs : row.duration_ms) ?? 0;
+  const at = atMs == null || !Number.isFinite(atMs) ? null : Math.max(0, Math.min(Math.round(atMs), length));
+  const [c] = await sql()`insert into video_comments (video_id, user_id, body, at_ms) values (${id}, ${user!.id}, ${text}, ${at}) returning id`;
+  return c.id as string;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function deleteComment(id: string, commentId: string, user: CurrentUser | null) {
+  const { access } = await commentAccess(id, user);
+  if (!UUID_RE.test(commentId)) throw new HttpError(404, "That comment doesn't exist");
+  const rows = await sql()`select user_id from video_comments where id = ${commentId} and video_id = ${id}`;
+  if (!rows[0]) throw new HttpError(404, "That comment doesn't exist");
+  if (rows[0].user_id !== user!.id && access !== "owner") throw new HttpError(403, "You can only delete your own comments");
+  await sql()`delete from video_comments where id = ${commentId}`;
 }

@@ -1,5 +1,5 @@
 // Drives the app for automated testing. Loaded only when RECORDIUS_E2E is set.
-//   RECORDIUS_E2E=<mode>:<ms>       mode: cam | screen | screen-cam | ui
+//   RECORDIUS_E2E=<mode>:<ms>       mode: cam | screen | screen-cam | ui | signin | update | retry
 //   RECORDIUS_E2E_FAKE=1            Chromium's fake camera/microphone (no OS permissions needed)
 //   RECORDIUS_E2E_CONNECT="<server> <token>"   connect before recording (otherwise the stored token is used)
 //   RECORDIUS_E2E_OPTS=<json>       extra recording settings
@@ -20,7 +20,7 @@ async function shot(w, name) {
   return file;
 }
 
-module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec }) => {
+module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec, retryFailedUploads }) => {
   const [mode, msText] = process.env.RECORDIUS_E2E.split(":");
   const ms = Number(msText) || 6000;
   if (process.env.RECORDIUS_E2E_FAKE) {
@@ -90,6 +90,64 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
     out({ ok: true, ui: r });
   };
 
+  /** Failed uploads: survive a restart (they're on disk), show a banner, upload with fresh tokens, clean up their queue. */
+  const runRetry = async () => {
+    const api = require("./api");
+    const library = require("./library");
+    const config = require("./config");
+    const js = (code) => win.panel.webContents.executeJavaScript(code);
+    const r = {};
+    const dir = path.join(config.DIR, "e2e-recordings");
+    fs.mkdirSync(dir, { recursive: true });
+    // 1) a real recording whose upload "failed": the server has the session, the file is only local
+    const video = await api.createVideo("E2E retry", "video/mp4");
+    const file = path.join(dir, `2026-01-01 00.00.00 ${video.id}.mp4`);
+    fs.writeFileSync(file, Buffer.alloc(6 * 1024 * 1024 + 123, 9)); // > 1 multipart part
+    library.addPending({ id: video.id, server: api.serverUrl(), localPath: file, durationMs: 3210, title: video.title, shareUrl: video.shareUrl, contentType: "video/mp4", failedAt: Date.now() });
+    // 2) a video deleted on the web meanwhile, 3) a local file that's gone
+    const gone = await api.createVideo("E2E deleted", "video/mp4");
+    await api.deleteVideo(gone.id);
+    const goneFile = path.join(dir, `x ${gone.id}.mp4`);
+    fs.writeFileSync(goneFile, "x");
+    library.addPending({ id: gone.id, server: api.serverUrl(), localPath: goneFile, durationMs: 1, shareUrl: gone.shareUrl, failedAt: Date.now() });
+    library.addPending({ id: "f".repeat(32), server: api.serverUrl(), localPath: path.join(dir, "missing.mp4"), durationMs: 1, shareUrl: "x", failedAt: Date.now() });
+    // a recording for another workspace must be left alone
+    library.addPending({ id: "e".repeat(32), server: "https://elsewhere.example", localPath: file, durationMs: 1, shareUrl: "x", failedAt: Date.now() });
+    // …and so must one recorded by another account on this server
+    library.addPending({ id: "d".repeat(32), server: api.serverUrl(), account: "someone-else@example.com", localPath: file, durationMs: 1, shareUrl: "x", failedAt: Date.now() });
+
+    showPanel();
+    await until(() => win.panel && !win.panel.webContents.isLoading());
+    await wait(1500);
+    win.panel.webContents.send("panel:pending", 3); // what main sends on changes; boot() reads it from panel:init too
+    await wait(200);
+    r.bannerShown = await js(`!document.getElementById('pendingBanner').hidden`);
+    r.bannerTitle = await js(`document.getElementById('pendingTitle').textContent`);
+    r.bannerShot = await shot(win.panel, "panel-pending");
+
+    const result = await retryFailedUploads({ manual: false });
+    r.result = result;
+    await wait(300);
+    r.bannerHiddenAfter = await js(`document.getElementById('pendingBanner').hidden`);
+    const after = await api.recent(10);
+    const v = after.videos.find((x) => x.id === video.id);
+    r.serverStatus = v?.status;
+    r.serverDurationMs = v?.durationMs;
+    r.remainingIds = library.pending().map((p) => p.id[0]);
+    r.uploadedLedger = Object.keys(JSON.parse(fs.readFileSync(path.join(config.DIR, "uploaded.json"), "utf8"))).includes(video.id);
+    // the uploaded file is the local copy, byte for byte
+    const full = await fetch(`${api.serverUrl()}/api/videos/${video.id}`, { headers: { authorization: `Bearer ${config.token()}` } }).then((res) => res.json());
+    const head = await fetch(full.videoUrl, { headers: { range: "bytes=0-0" } });
+    r.remoteBytes = Number(head.headers.get("content-range")?.split("/")[1]);
+    r.localBytes = fs.statSync(file).size;
+    await api.deleteVideo(video.id).catch(() => {});
+    fs.rmSync(dir, { recursive: true, force: true });
+    library.removePending("e".repeat(32));
+    library.removePending("d".repeat(32));
+    const ok = r.bannerShown && r.serverStatus === "ready" && r.serverDurationMs === 3210 && r.remainingIds.sort().join("") === "de" && r.uploadedLedger && r.remoteBytes === r.localBytes && result.done === 1;
+    out({ ok, retry: r });
+  };
+
   const runSignedOut = async () => {
     showPanel();
     await until(() => win.panel && !win.panel.webContents.isLoading());
@@ -116,6 +174,7 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
         return out({ ok: true, info: { current: info.current, latest: info.latest }, progress });
       }
       if (mode === "signin") return await runSignedOut();
+      if (mode === "retry") return await runRetry();
 
       const shots = {};
       const sourceId = mode === "cam" ? null : (await desktopCapturer.getSources({ types: ["screen"] }))[0]?.id;

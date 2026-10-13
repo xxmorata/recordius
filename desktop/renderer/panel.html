@@ -170,6 +170,11 @@
             <span class="actions"><button id="grantScreen">Open Settings</button><button id="relaunch" class="ghost">Relaunch</button></span>
           </div>
 
+          <div class="banner" id="pendingBanner" hidden>
+            <span><b id="pendingTitle">1 upload didn’t finish</b><span id="pendingText">It’s saved on this Mac. Recordius retries automatically.</span></span>
+            <span class="actions"><button id="retryUploads">Retry now</button></span>
+          </div>
+
           <div class="row" data-row="source">
             <button class="row-head" id="sourceHead">
               <svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="10" rx="2" /><path d="M7 17h6M10 14v3" /></svg>
@@ -266,6 +271,7 @@
 
         <div class="group">
           <div class="item"><span>Recordings are also saved on this Mac<small>~/Movies/Recordius</small></span><button class="text-btn" id="openFolder">Show folder</button></div>
+          <label class="item"><span>Keep local copies<small>Only copies that finished uploading are removed</small></span><select id="sKeepLocal"><option value="7">7 days</option><option value="30">30 days</option><option value="0">Forever</option></select></label>
           <div class="item"><span id="updateText">Recordius <span id="versionInline"></span></span><button class="text-btn" id="checkUpdates">Check for updates</button></div>
           <div class="item" id="updateRow" hidden><span style="flex: 1"><span id="updateInfo"></span><span class="update-bar" id="updateBar" hidden><span id="updateProgress"></span></span></span><button class="text-btn" id="installUpdate">Update &amp; restart</button></div>
         </div>

@@ -36,9 +36,13 @@
 - **Upload existing videos**: drop MP4/MOV/WebM files on the library and they get a share link like any recording.
 - **Viewer insights**: see which teammates watched and how far they got; anonymous viewers are counted too.
 - **Custom thumbnails**: pick any frame of the video as its preview image.
+- **Timestamped comments** for your team: comment at the moment you mean, click a timestamp to jump there, see comments as dots on the timeline. Only workspace members (and people you invited) see them.
+- **Rich link previews**: pasting a public link into Notion, Slack, Confluence and other oEmbed apps shows a playable video and a thumbnail that doesn't expire.
+- **Uploads that never get lost**: if the network drops, the Mac app keeps the recording and finishes the upload by itself later — even after a restart.
 - **Workspaces & invites** — the first person to open the site becomes the owner; teammates join through invite links. Roles: owner, admin, member.
-- **Library**: search, rename, archive, delete, view counts, "Workspace" tab for videos shared by teammates. The Mac app also lists your latest videos with a one-click *Copy link*.
-- **Player**: speed control, keyboard shortcuts, picture-in-picture, fullscreen, link-at-timestamp (`?t=1m23s`), embed code.
+- **Library**: search, sort, filter by person, select several videos to archive, delete or change access at once, view counts, "Workspace" tab for videos shared by teammates. The Mac app also lists your latest videos with a one-click *Copy link*.
+- **Name it right away**: after you stop, the share page opens with the title ready to type — or click any title to rename it in place.
+- **Player**: speed control, keyboard shortcuts (press <kbd>?</kbd> to see them), picture-in-picture, fullscreen, link-at-timestamp (`?t=1m23s`), embed code.
 - **Private storage** — files sit in a private Vercel Blob store; viewers get short-lived signed URLs only after the access check.
 - **Updates that keep permissions** — the Mac app is signed with a stable certificate and updates itself; macOS never asks for Screen Recording access twice.
 - **No vendor lock-in for your data**: Postgres (any provider) + Vercel Blob. Everything is exportable.

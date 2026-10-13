@@ -30,9 +30,11 @@ A Postgres in Docker, if you need one: `docker run -d --name rcd-pg -e POSTGRES_
 
 | What | Command | Notes |
 | --- | --- | --- |
-| Web API, end to end (83 checks) | `cd web && npm test` | against the running dev server; **wipes nothing but needs an empty database** (it starts at `/setup`). `BASE=https://…` to target another server. |
+| Web API, end to end (150+ checks) | `cd web && npm test` | against the running dev server; **wipes nothing but needs an empty database** (it starts at `/setup`). `BASE=https://…` to target another server. |
 | Desktop: panel UI | `cd desktop && RECORDIUS_USER_DATA=/tmp/rcd RECORDIUS_E2E=ui RECORDIUS_E2E_FAKE=1 RECORDIUS_E2E_CONNECT="http://localhost:3000 <device token>" npx electron .` | device token: web → Get the app → Connect desktop app → *Paste a connection code* value |
 | Desktop: record → upload → ready | `RECORDIUS_E2E=cam:6000 RECORDIUS_E2E_FAKE=1 …` | fake camera/mic; `screen` / `screen-cam` need the Screen Recording permission |
+| Desktop: upload queue & local-copy cleanup | `cd desktop && npm test` | plain Node, no Electron or server needed; runs in CI |
+| Desktop: failed upload → retry | `RECORDIUS_E2E=retry RECORDIUS_E2E_FAKE=1 RECORDIUS_E2E_CONNECT=… npx electron .` | queues a "failed" recording, a deleted one and a missing file, then checks the banner and the retry |
 | Desktop: in-app update | `RECORDIUS_E2E=update RECORDIUS_UPDATE_URL=http://127.0.0.1:8787/latest.json …` | serve a fake release JSON + tarball locally |
 
 Results are written as JSON to `RECORDIUS_E2E_OUT`; `RECORDIUS_E2E_SHOTS=<dir>` saves PNGs of every window.

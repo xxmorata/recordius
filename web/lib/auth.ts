@@ -132,6 +132,8 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Stable machine-readable reason for clients that act on it (e.g. the desktop upload queue). */
+    public code?: string,
   ) {
     super(message);
   }
@@ -142,7 +144,7 @@ export function json(data: unknown, init?: ResponseInit) {
 }
 
 export function errorResponse(err: unknown): Response {
-  if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status });
+  if (err instanceof HttpError) return Response.json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, { status: err.status });
   console.error(err);
   return Response.json({ error: "Something went wrong" }, { status: 500 });
 }

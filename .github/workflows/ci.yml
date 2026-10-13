@@ -25,3 +25,5 @@ jobs:
         with: { node-version: 22 }
       - run: for f in src/*.js renderer/*.js launcher/*.js scripts/*.mjs; do node --check "$f"; done
         working-directory: desktop
+      - run: node scripts/test-library.mjs
+        working-directory: desktop

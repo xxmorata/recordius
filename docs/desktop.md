@@ -68,13 +68,15 @@ When you stop:
 2. the last seconds finish uploading (the video uploaded while you recorded),
 3. the page starts playing by itself and you get a *Your video is ready* notification.
 
-Every recording is also saved to `~/Movies/Recordius`. If an upload fails (offline, token revoked), the menu-bar menu shows **Retry failed uploads**.
+Every recording is also saved to `~/Movies/Recordius`. If an upload doesn't finish (offline, laptop closed, app quit), Recordius keeps it in a queue and uploads it by itself — on the next start, every few minutes and after the Mac wakes up. The panel shows a banner with **Retry now**, and the menu-bar menu has **Retry failed uploads**.
+
+**Keep local copies** (Settings) removes copies older than 7 or 30 days, or never (the default is 30 days). Only files that finished uploading are ever removed — a copy that might be the only one is always kept.
 
 The control bar (left edge of the screen) has: stop, timer, pause, restart, delete, and a camera-bubble toggle. It is excluded from the recording.
 
 ## Settings
 
-Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubble size, open at login, shortcuts, recordings folder, sign out, check for updates. The default **privacy** of new recordings is a *workspace* setting in the web app (Settings → Members & workspace); each video can be changed afterwards.
+Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubble size, open at login, shortcuts, recordings folder, how long to keep local copies, sign out, check for updates. The default **privacy** of new recordings is a *workspace* setting in the web app (Settings → Members & workspace); each video can be changed afterwards.
 
 ## Troubleshooting
 
@@ -82,7 +84,7 @@ Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubb
 - **No windows in the picker** — the window list appears only after Screen Recording is allowed.
 - **The browser didn't open the app** — use *Paste a connection code instead*.
 - **"This Mac is no longer connected"** — the device was disconnected from the web app; connect it again from *Get the app*.
-- **Recording works but the share page says "uploading" for a long time** — check the menu-bar menu for *Retry failed uploads*; the local file is in `~/Movies/Recordius`.
+- **Recording works but the share page says "uploading" for a long time** — open the panel: if the upload didn't finish, a banner shows **Retry now** (the app also retries by itself). The local file is in `~/Movies/Recordius`.
 - Logs: run `/Applications/Recordius.app/Contents/MacOS/Recordius` from Terminal to see output.
 
 ## Build from source
