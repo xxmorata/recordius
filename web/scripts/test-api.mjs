@@ -266,6 +266,16 @@ r = await owner.call("POST", "/api/auth/password", { current: "password1", next:
 await expectStatus(r, 200, "password changed");
 r = await owner.call("GET", "/api/me");
 await expectStatus(r, 200, "still signed in after change");
+const ownerId = (await owner.call("GET", "/api/workspace/members")).json.members.find((m) => m.role === "owner").id;
+r = await member.call("POST", `/api/workspace/members/${ownerId}/reset`);
+await expectStatus(r, 403, "member can't reset the owner's password");
+r = await owner.call("PATCH", `/api/workspace/members/${memberId}`, { role: "admin" });
+r = await member.call("POST", `/api/workspace/members/${ownerId}/reset`);
+await expectStatus(r, 403, "admin can't reset the owner's password");
+r = await owner.call("PATCH", `/api/workspace/members/${memberId}`, { role: "member" });
+r = await anon.call("GET", "/login?next=//evil.example/x");
+assert.ok(!r.text.includes("//evil.example"), "protocol-relative next is dropped");
+ok("open redirect blocked");
 r = await owner.call("POST", `/api/workspace/members/${ivyId}/reset`);
 await expectStatus(r, 200, "admin creates reset link");
 const resetToken = r.json.url.split("/reset/")[1];
@@ -275,6 +285,17 @@ r = await anon.call("POST", "/api/auth/reset", { token: resetToken, password: "n
 await expectStatus(r, 404, "reset link single-use");
 r = await client().call("POST", "/api/auth/login", { email: `ivy${stamp}@test.dev`, password: "newpassword9" });
 await expectStatus(r, 200, "login with new password");
+{
+  const ivy = client();
+  await ivy.call("POST", "/api/auth/login", { email: `ivy${stamp}@test.dev`, password: "newpassword9" });
+  const dev = await ivy.call("POST", "/api/desktop/connect", { deviceName: "Ivy Mac" });
+  const ivyDesktop = client();
+  ivyDesktop.setBearer(dev.json.token);
+  await expectStatus(await ivyDesktop.call("GET", "/api/me"), 200, "ivy's desktop connected");
+  const link = (await owner.call("POST", `/api/workspace/members/${ivyId}/reset`)).json.url.split("/reset/")[1];
+  await anon.call("POST", "/api/auth/reset", { token: link, password: "newpassword10" });
+  await expectStatus(await ivyDesktop.call("GET", "/api/me"), 401, "password reset revokes desktop tokens");
+}
 
 section("cleanup & teardown");
 r = await owner.call("DELETE", `/api/videos/${video.id}`);

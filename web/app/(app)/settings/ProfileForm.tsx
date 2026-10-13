@@ -57,7 +57,7 @@ export function ProfileForm({ user }: { user: { name: string; email: string; ava
     try {
       await api("/api/auth/password", { method: "POST", json: { current: data.get("current"), next: data.get("next") } });
       form.reset();
-      toast("Password changed. Other sessions were signed out.");
+      toast("Password changed. Other browsers were signed out; desktop apps stay connected (see Connected devices).");
     } catch (err) {
       toast((err as Error).message, "error");
     }

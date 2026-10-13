@@ -190,9 +190,14 @@ export async function acceptInvite(token: string, input: { name: string; email: 
 // ───────── password resets (no email provider needed: an admin hands the link over) ─────────
 
 export async function createPasswordReset(user: CurrentUser, memberId: string): Promise<string> {
-  if (!canManageWorkspace(user) && memberId !== user.id) throw new HttpError(403, "Only admins can reset passwords");
-  const member = await sql()`select 1 from memberships where workspace_id = ${user.workspace.id} and user_id = ${memberId}`;
+  const member = await sql()`select role from memberships where workspace_id = ${user.workspace.id} and user_id = ${memberId}`;
   if (!member[0]) throw new HttpError(404, "Member not found");
+  // Same rules as changing roles: nobody resets the owner's password, and only the owner resets an admin's.
+  if (memberId !== user.id) {
+    if (!canManageWorkspace(user)) throw new HttpError(403, "Only admins can reset passwords");
+    if (member[0].role === "owner") throw new HttpError(403, "The owner's password can only be reset by the owner");
+    if (member[0].role === "admin" && user.role !== "owner") throw new HttpError(403, "Only the owner can reset an admin's password");
+  }
   const token = randomToken(24);
   await sql()`insert into password_resets (user_id, token_hash, expires_at) values (${memberId}, ${hashToken(token)}, now() + interval '2 days')`;
   return token;
@@ -205,7 +210,9 @@ export async function consumePasswordReset(token: string, password: string): Pro
     if (!rows[0]) throw new HttpError(404, "This reset link is no longer valid");
     await tx`update users set password_hash = ${await hashPassword(password)} where id = ${rows[0].user_id}`;
     await tx`update password_resets set used_at = now() where id = ${rows[0].id}`;
+    // A reset means the old credentials may be in the wrong hands: sign out everywhere, desktop apps included.
     await tx`delete from sessions where user_id = ${rows[0].user_id}`;
+    await tx`delete from device_tokens where user_id = ${rows[0].user_id}`;
     return rows[0].user_id as string;
   });
 }

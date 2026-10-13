@@ -18,7 +18,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
     <>
       <h1 className="text-xl font-semibold">Welcome back</h1>
       <p className="mt-1 mb-6 text-sm text-ink-3">Sign in to your Recordius workspace.</p>
-      <AuthForm action="/api/auth/login" submitLabel="Sign in" redirectTo={next?.startsWith("/") ? next : "/library"}>
+      <AuthForm action="/api/auth/login" submitLabel="Sign in" redirectTo={next && /^\/(?![\/\\])/.test(next) ? next : "/library"}>
         <Field label="Email">
           <Input name="email" type="email" autoComplete="email" required autoFocus placeholder="you@company.com" />
         </Field>
