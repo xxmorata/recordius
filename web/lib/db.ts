@@ -1,0 +1,52 @@
+import postgres, { type Sql } from "postgres";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+declare global {
+  // Reused across hot reloads in dev and across invocations in a warm serverless instance.
+  var __recordiusSql: Sql | undefined;
+}
+
+export function sql(): Sql {
+  if (!globalThis.__recordiusSql) {
+    // Vercel's Neon/Postgres integrations expose several names; any pooled Postgres URL works.
+    const url = process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? process.env.POSTGRES_PRISMA_URL;
+    if (!url) throw new Error("DATABASE_URL is not configured");
+    globalThis.__recordiusSql = postgres(url, {
+      max: 5,
+      idle_timeout: 20,
+      connect_timeout: 10,
+      // Works with transaction-mode poolers (Neon, Supabase, PgBouncer).
+      prepare: false,
+      transform: { undefined: null },
+    });
+  }
+  return globalThis.__recordiusSql;
+}
+
+const MIGRATIONS_DIR = join(process.cwd(), "db", "migrations");
+
+/** Applies db/migrations/*.sql in order; safe to call repeatedly. */
+export async function migrate(): Promise<string[]> {
+  const db = sql();
+  await db`create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())`;
+  const applied = new Set((await db`select name from schema_migrations`).map((r) => r.name as string));
+  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  const ran: string[] = [];
+  for (const file of files) {
+    if (applied.has(file)) continue;
+    const body = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
+    await db.begin(async (tx) => {
+      await tx.unsafe(body);
+      await tx`insert into schema_migrations (name) values (${file})`;
+    });
+    ran.push(file);
+  }
+  return ran;
+}
+
+/** True once the schema exists (used by /setup to decide whether to run migrations). */
+export async function schemaReady(): Promise<boolean> {
+  const rows = await sql()`select to_regclass('public.users') as t`;
+  return rows[0]?.t !== null;
+}

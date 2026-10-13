@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+// Dev helper: creates a demo workspace (if the database is empty) and a few real videos.
+// Needs ffmpeg on PATH and a running server.   BASE=http://localhost:3000 node scripts/seed-demo.mjs
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const require = createRequire(import.meta.url);
+const { put } = require("@vercel/blob/client");
+
+const BASE = process.env.BASE ?? "http://localhost:3000";
+const EMAIL = process.env.DEMO_EMAIL ?? "demo@recordius.local";
+const PASSWORD = process.env.DEMO_PASSWORD ?? "password1";
+
+const jar = new Map();
+async function call(method, path, body, bearer) {
+  const headers = { "content-type": "application/json" };
+  if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const res = await fetch(BASE + path, { method, headers, body: body && JSON.stringify(body) });
+  for (const c of res.headers.getSetCookie?.() ?? []) {
+    const [k, v] = c.split(";")[0].split("=");
+    jar.set(k.trim(), v);
+  }
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${JSON.stringify(json)}`);
+  return json;
+}
+
+await fetch(`${BASE}/setup`);
+let signedIn = await call("POST", "/api/auth/login", { email: EMAIL, password: PASSWORD }).then(() => true).catch(() => false);
+if (!signedIn) {
+  await call("POST", "/api/auth/signup", { workspaceName: "Pixel & Co Design Studio", name: "Demo Designer", email: EMAIL, password: PASSWORD });
+  console.log(`created workspace + ${EMAIL} / ${PASSWORD}`);
+}
+const { token } = await call("POST", "/api/desktop/connect", { deviceName: "Seed script" });
+
+const dir = mkdtempSync(join(tmpdir(), "rcd-seed-"));
+const VIDEOS = [
+  { title: "Onboarding flow walkthrough — v3", seconds: 14, color: "0x625df5" },
+  { title: "Bug repro: checkout button misaligned on mobile Safari", seconds: 6, color: "0xff4f52" },
+  { title: "Weekly design review (long one, skip to 1:00 for the summary)", seconds: 95, color: "0x16a34a" },
+];
+for (const [i, v] of VIDEOS.entries()) {
+  const mp4 = join(dir, `v${i}.mp4`);
+  const jpg = join(dir, `v${i}.jpg`);
+  execFileSync("ffmpeg", [
+    "-v", "error", "-y",
+    "-f", "lavfi", "-i", `testsrc2=size=1280x720:rate=30:duration=${v.seconds}`,
+    "-f", "lavfi", "-i", `sine=frequency=440:duration=${v.seconds}`,
+    "-vf", `drawbox=x=0:y=0:w=1280:h=90:color=${v.color}@0.9:t=fill`,
+    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", mp4,
+  ]);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", "1", "-i", mp4, "-frames:v", "1", "-q:v", "3", jpg]);
+  const created = await call("POST", "/api/videos", { title: v.title, mimeType: "video/mp4" }, token);
+  const { videoPathname, videoToken, thumbPathname, thumbToken } = created.upload;
+  await put(videoPathname, readFileSync(mp4), { access: "private", token: videoToken, contentType: "video/mp4", multipart: true });
+  await put(thumbPathname, readFileSync(jpg), { access: "private", token: thumbToken, contentType: "image/jpeg" });
+  await call("POST", `/api/videos/${created.id}/thumbnail`, undefined, token);
+  await call("POST", `/api/videos/${created.id}/complete`, { durationMs: v.seconds * 1000, size: readFileSync(mp4).length }, token);
+  if (i === 1) await call("PATCH", `/api/videos/${created.id}`, { privacy: "workspace" });
+  if (i === 2) await call("PATCH", `/api/videos/${created.id}`, { privacy: "private" });
+  console.log(`seeded ${created.shareUrl}`);
+}
+rmSync(dir, { recursive: true, force: true });

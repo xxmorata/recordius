@@ -1,0 +1,55 @@
+:root {
+  --brand: #ff4f52;
+  --brand-hover: #f0393c;
+  --brand-soft: #fff0f0;
+  --accent: #625df5;
+  --accent-soft: #eeedfe;
+  --ink: #191c26;
+  --ink-2: #4b4e5a;
+  --ink-3: #7c7f8b;
+  --ink-4: #a9abb5;
+  --line: #e8e8ec;
+  --line-2: #d7d8de;
+  --surface: #ffffff;
+  --surface-2: #f4f4f7;
+  --surface-3: #ebebf0;
+  --green: #16a34a;
+  --green-soft: #e7f7ec;
+  --red-soft: #fee2e2;
+  --radius: 18px;
+  color-scheme: light;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--ink);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Text", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow: hidden;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 0;
+  background: none;
+  padding: 0;
+}
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(98, 93, 245, 0.45);
+  outline-offset: 2px;
+}
+[hidden] {
+  display: none !important;
+}
+svg {
+  flex: none;
+}

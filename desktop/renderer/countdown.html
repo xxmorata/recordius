@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'" />
+    <title>Recordius countdown</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body { display: grid; place-items: center; background: rgba(25, 28, 38, 0.18); }
+      .n { width: 160px; height: 160px; border-radius: 50%; background: rgba(25, 28, 38, 0.88); color: #fff; display: grid; place-items: center; font-size: 76px; font-weight: 700; letter-spacing: -0.02em; animation: pop 1s ease-out infinite; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35); }
+      @keyframes pop { from { transform: scale(1.12); opacity: 0.6; } 30% { transform: scale(1); opacity: 1; } }
+      .hint { position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); color: #fff; font-size: 14px; font-weight: 500; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5); }
+    </style>
+  </head>
+  <body>
+    <div class="n" id="n"></div>
+    <p class="hint">Get ready — press ⌘⇧R anytime to stop</p>
+    <script>
+      const total = Number(new URLSearchParams(location.search).get("ms")) || 3000;
+      const start = Date.now();
+      const el = document.getElementById("n");
+      const tick = () => (el.textContent = String(Math.max(1, Math.ceil((total - (Date.now() - start)) / 1000))));
+      tick();
+      setInterval(tick, 100);
+    </script>
+  </body>
+</html>

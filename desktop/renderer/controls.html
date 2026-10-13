@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Recordius controls</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      body { display: grid; place-items: center; }
+      .bar { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 52px; padding: 8px 0; border-radius: 26px; background: rgba(25, 28, 38, 0.94); color: #fff; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08); -webkit-app-region: drag; }
+      button { -webkit-app-region: no-drag; width: 38px; height: 38px; border-radius: 19px; display: grid; place-items: center; color: #fff; transition: background 0.12s; }
+      button:hover { background: rgba(255, 255, 255, 0.14); }
+      button svg { width: 18px; height: 18px; }
+      .stop { width: 40px; height: 40px; background: var(--brand); }
+      .stop:hover { background: var(--brand-hover); }
+      .stop .square { width: 13px; height: 13px; border-radius: 3px; background: #fff; }
+      .time { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.9); margin: 2px 0 4px; }
+      .paused .time { color: var(--brand); }
+      .sep { width: 24px; height: 1px; background: rgba(255, 255, 255, 0.16); margin: 4px 0; }
+      .grip { width: 16px; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.25); margin: 2px 0 6px; }
+      button.off { color: rgba(255, 255, 255, 0.45); }
+    </style>
+  </head>
+  <body>
+    <div class="bar" id="bar">
+      <span class="grip"></span>
+      <button class="stop" id="stop" title="Stop and copy link (⌘⇧R)"><span class="square"></span></button>
+      <span class="time" id="time">0:00</span>
+      <button id="pause" title="Pause (⌘⇧P)">
+        <svg id="pauseIcon" viewBox="0 0 20 20" fill="currentColor"><rect x="5" y="4" width="3.5" height="12" rx="1" /><rect x="11.5" y="4" width="3.5" height="12" rx="1" /></svg>
+        <svg id="playIcon" viewBox="0 0 20 20" fill="currentColor" style="display: none"><path d="M6 4.5v11a1 1 0 0 0 1.5.86l9-5.5a1 1 0 0 0 0-1.72l-9-5.5A1 1 0 0 0 6 4.5Z" /></svg>
+      </button>
+      <button id="restart" title="Restart recording"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10a6 6 0 1 0 1.8-4.3" /><path d="M4 3.5V7h3.5" /></svg></button>
+      <button id="cancel" title="Delete recording"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h12M8 6V4.5h4V6M6 6l.7 9.5h6.6L14 6" /></svg></button>
+      <span class="sep"></span>
+      <button id="camera" title="Show or hide the camera bubble"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="11" height="10" rx="2" /><path d="M13.5 9l4-2.5v7l-4-2.5" /></svg></button>
+    </div>
+    <script src="controls.js"></script>
+  </body>
+</html>

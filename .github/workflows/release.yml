@@ -1,0 +1,34 @@
+# Builds the macOS app and attaches it to a GitHub release whenever a `v*` tag is pushed.
+#   git tag v1.0.1 && git push origin v1.0.1
+name: Release desktop app
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Check that the tag matches desktop/package.json
+        run: |
+          V=$(node -p "require('./desktop/package.json').version")
+          [ "v$V" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package version v$V"; exit 1; }
+      - run: npm ci
+        working-directory: desktop
+      - run: node scripts/package.mjs --release --no-install
+        working-directory: desktop
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/dist/release/*
+          generate_release_notes: true
