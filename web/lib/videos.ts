@@ -122,14 +122,26 @@ async function isUnlocked(row: VideoRow): Promise<boolean> {
 
 const ATTEMPT_WINDOW = "15 minutes";
 const MAX_ATTEMPTS_PER_CLIENT = 8;
-const MAX_ATTEMPTS_PER_VIDEO = 60;
+const MAX_ATTEMPTS_PER_VIDEO = 60; // for clients that already failed here
+const HARD_CAP_PER_VIDEO = 300; // for everyone: rotating IPs can't keep guessing forever
+
+/** IPv6 clients usually control a whole /64, so they're limited per /64 rather than per address. */
+function ipBucket(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const [head] = ip.split("%");
+  const parts = head.split("::");
+  const left = parts[0] ? parts[0].split(":") : [];
+  const right = parts.length > 1 && parts[1] ? parts[1].split(":") : [];
+  const full = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${full.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
 
 export async function unlockVideo(id: string, password: string, clientIp: string) {
   const row = await rowById(id);
   if (!row || row.privacy !== "link" || !row.link_password_hash) throw new HttpError(404, "This video doesn't exist");
   if (row.link_expires_at && new Date(row.link_expires_at).getTime() < Date.now()) throw new LinkLockedError("expired");
   const db = sql();
-  const clientKey = createHmac("sha256", authSecret()).update(`ip:${clientIp}`).digest("hex");
+  const clientKey = createHmac("sha256", authSecret()).update(`ip:${ipBucket(clientIp)}`).digest("hex");
   // Record the attempt first, then count — in one statement, so concurrent guesses all see each other.
   const [attempt] = await db`
     with ins as (insert into unlock_attempts (video_id, client_key) values (${id}, ${clientKey}) returning id)
@@ -140,7 +152,8 @@ export async function unlockVideo(id: string, password: string, clientIp: string
   const mine = Number(attempt.mine);
   // The per-video cap only applies to clients that have already failed here, so someone hammering a
   // link can't lock out a viewer who types the right password the first time.
-  if (mine > MAX_ATTEMPTS_PER_CLIENT || (mine > 1 && Number(attempt.total) > MAX_ATTEMPTS_PER_VIDEO)) {
+  const total = Number(attempt.total);
+  if (mine > MAX_ATTEMPTS_PER_CLIENT || (mine > 1 && total > MAX_ATTEMPTS_PER_VIDEO) || total > HARD_CAP_PER_VIDEO) {
     throw new HttpError(429, "Too many wrong passwords. Try again in 15 minutes.");
   }
   if (!(await verifyPassword(password, row.link_password_hash))) {
