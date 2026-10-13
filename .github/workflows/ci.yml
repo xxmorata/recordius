@@ -1,0 +1,27 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci
+        working-directory: web
+      - run: npx tsc --noEmit -p .
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+        env: { DATABASE_URL: "postgres://x:y@localhost:5432/ci", BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_ci", AUTH_SECRET: "ci-secret-not-real-0123456789" }
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: for f in src/*.js renderer/*.js launcher/*.js scripts/*.mjs; do node --check "$f"; done
+        working-directory: desktop

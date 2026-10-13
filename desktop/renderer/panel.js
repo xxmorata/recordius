@@ -14,10 +14,11 @@ const CHECK = `<svg class="check" viewBox="0 0 20 20" fill="none" stroke="curren
 function setView(view) {
   document.body.dataset.view = view;
   if (view === "settings") fillSettings();
-  if (view === "recorder") {
+  if (view === "recorder" && warmed) {
     loadSources().catch(() => {});
     startMeter();
   } else stopMeter();
+  updateCameraPreview();
 }
 
 function save(patch) {
@@ -332,10 +333,15 @@ $("submitCode").onclick = async () => {
   }
 };
 
-api.on("account:changed", (info) => {
+api.on("account:changed", async (info) => {
   init = { ...init, ...info };
-  setView(info.connected ? "recorder" : "signin");
-  if (!info.connected) updateCameraPreview();
+  if (info.connected) {
+    setView("recorder");
+    await warmUp();
+  } else {
+    setView("signin");
+    updateCameraPreview();
+  }
 });
 
 // ───────── wiring ─────────
@@ -364,9 +370,12 @@ api.on("panel:navigate", (view) => setView(view));
 api.on("panel:visibility", (visible) => {
   if (visible) {
     if (document.body.dataset.view === "recorder") {
-      loadSources().catch(() => {});
-      startMeter();
-      updateCameraPreview(true);
+      if (!warmed) warmUp();
+      else {
+        loadSources().catch(() => {});
+        startMeter();
+        updateCameraPreview(true);
+      }
     }
   } else {
     stopMeter();
@@ -385,24 +394,38 @@ setInterval(async () => {
   }
 }, 1500);
 
+let warmed = false;
+let warming = null;
+
+/** Permission prompts, device list, screen previews and the mic meter — only once the panel is actually on screen. */
+function warmUp() {
+  if (warming) return warming;
+  warming = (async () => {
+    $("screenPerm").hidden = init.media.screen === "granted";
+    render();
+    loadSources(true).catch(() => {});
+    const media = { ...init.media };
+    for (const kind of ["camera", "microphone"]) {
+      if (media[kind] === "not-determined") media[kind] = (await api.invoke("media:request", kind)) ? "granted" : "denied";
+    }
+    init.media = media;
+    await loadDevices(media).catch(() => {});
+    warmed = true;
+    render();
+    startMeter();
+  })().finally(() => (warming = null));
+  return warming;
+}
+
 async function boot() {
   init = await api.invoke("panel:init");
   settings = { ...init.settings };
-  const requested = new URLSearchParams(location.search).get("view");
   if (!init.connected) {
     $("serverUrl").value = init.server ?? "";
     setView("signin");
     return;
   }
-  setView(requested === "settings" ? "settings" : "recorder");
-  $("screenPerm").hidden = init.media.screen === "granted";
+  setView("recorder");
   render();
-  const media = { ...init.media };
-  for (const kind of ["camera", "microphone"]) {
-    if (media[kind] === "not-determined") media[kind] = (await api.invoke("media:request", kind)) ? "granted" : "denied";
-  }
-  await loadDevices(media).catch(() => {});
-  render();
-  startMeter();
 }
 boot();

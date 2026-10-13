@@ -91,22 +91,17 @@ function displayForSource(sourceId) {
   return activeDisplay();
 }
 
-function showPanel(view) {
-  if (state !== "idle") return;
-  if (win.panel) {
-    win.panel.show();
-    win.panel.focus();
-    if (view) win.panel.webContents.send("panel:navigate", view);
-    return;
-  }
+/** The panel window is created once at startup (hidden) so opening it later is instant. */
+function ensurePanelWindow() {
+  if (win.panel && !win.panel.isDestroyed()) return win.panel;
   // No native shadow: for a transparent window macOS draws it for the whole rectangle, which shows up
   // as a faint box around the rounded panel. The panel draws its own shadow in CSS instead.
-  const w = createWindow("panel", { width: PANEL_WINDOW, height: 560, transparent: true, hasShadow: false, alwaysOnTop: false }, "panel.html", view ? { view } : undefined);
-  const d = activeDisplay().workArea;
-  w.setPosition(Math.round(d.x + d.width / 2 - PANEL_WINDOW / 2), Math.round(d.y + Math.max(20, d.height / 2 - 300)));
-  w.once("ready-to-show", () => {
-    w.show();
-    w.focus();
+  const w = createWindow("panel", { width: PANEL_WINDOW, height: 560, transparent: true, hasShadow: false, alwaysOnTop: false }, "panel.html");
+  placePanel(w);
+  w.on("close", (e) => {
+    // ⌘W / window close keeps the (hidden) window around so the next open stays instant.
+    e.preventDefault();
+    hidePanel();
   });
   // The preview bubble belongs to the panel: it goes away when the panel is hidden (⌘H, close) or
   // simply loses focus (another app in front), and comes back when the panel is focused again.
@@ -126,6 +121,29 @@ function showPanel(view) {
   w.on("blur", () => {
     if (state === "idle" && !E2E) hideCamera();
   });
+  return w;
+}
+
+function placePanel(w) {
+  const d = activeDisplay().workArea;
+  w.setPosition(Math.round(d.x + d.width / 2 - PANEL_WINDOW / 2), Math.round(d.y + Math.max(20, d.height / 2 - 300)));
+}
+
+let panelPlaced = false;
+function showPanel(view) {
+  if (state !== "idle") return;
+  const w = ensurePanelWindow();
+  const reveal = () => {
+    if (!w.isVisible()) {
+      if (!panelPlaced) placePanel(w); // first open: centre on the display the user is on
+      panelPlaced = true;
+      w.show();
+    }
+    w.focus();
+    if (view) w.webContents.send("panel:navigate", view);
+  };
+  if (w.webContents.isLoading()) w.once("ready-to-show", reveal);
+  else reveal();
 }
 
 function hidePanel() {
@@ -596,8 +614,9 @@ ipcMain.handle("panel:sources", async () => {
   }
   let screens, windows;
   try {
+    // 560 px is plenty for a 300 px-wide card on a Retina panel and is noticeably faster to grab.
     [screens, windows] = await Promise.all([
-      desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 720, height: 450 } }),
+      desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 560, height: 350 } }),
       desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 1, height: 1 }, fetchWindowIcons: true }),
     ]);
   } catch (err) {
@@ -782,6 +801,7 @@ app.whenReady().then(async () => {
   tray.setToolTip("Recordius");
   refreshTray();
   ensureRecorderWindow();
+  ensurePanelWindow();
 
   globalShortcut.register(SHORTCUT_TOGGLE, () => {
     if (state === "recording" || state === "paused") stopRecording();

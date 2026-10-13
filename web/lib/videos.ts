@@ -97,6 +97,8 @@ export async function videoExists(id: string): Promise<boolean> {
 }
 
 export async function listVideos(user: CurrentUser, scope: LibraryScope, query = ""): Promise<Video[]> {
+  // Piggy-back housekeeping on library loads: recordings whose app never finished are marked failed after a day.
+  failStaleRecordings().catch(() => {});
   const q = query.trim() ? `%${query.trim().replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
   const params: string[] = [user.workspace.id, user.id];
   let where: string;

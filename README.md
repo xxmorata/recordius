@@ -82,6 +82,10 @@ cd desktop && npm install && npm start # runs from source; connect it to http://
 npm run package                        # builds Recordius.app and installs it to ~/Applications
 ```
 
+## Contributing
+
+Local setup, tests, project layout and the release process are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 [MIT](LICENSE). Recordius is not affiliated with Loom.
