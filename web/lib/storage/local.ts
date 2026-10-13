@@ -13,8 +13,8 @@ import type { StorageDriver } from "./types";
  * server only hands out after its access check — the same model as a private bucket.
  */
 
-// Clients send 8 MB parts (PART_SIZE in ../blob.ts); a little headroom, never more.
-export const MAX_PART_BYTES = 32 * 1024 ** 2;
+// Clients send 8 MB parts (PART_SIZE in ../blob.ts) and a smaller last one; a little headroom, never more.
+export const MAX_PART_BYTES = 9 * 1024 ** 2;
 const MAX_FILE_BYTES = 20 * 1024 ** 3;
 export const MAX_PUT_BYTES = 25 * 1024 ** 2;
 const MAX_PARTS = 10_000;
@@ -121,7 +121,7 @@ async function writeStream(body: ReadableStream<Uint8Array>, dest: string, maxBy
 export async function receiveWrite(target: WriteTarget, body: ReadableStream<Uint8Array>): Promise<string> {
   if (target.kind === "put") return writeStream(body, fileFor(target.pathname), MAX_PUT_BYTES);
   const dir = uploadDir(target.uploadId);
-  const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8")) as { pathname: string }; // the upload must exist
+  const meta = await readMeta(dir); // the upload must exist
   if (!verify(target.sig, target.expires, "part", target.uploadId, String(target.partNumber), meta.pathname)) throw new Error("Forbidden");
   // Keep one file under the size limit, however many parts arrive.
   let stored = 0;
@@ -132,12 +132,26 @@ export async function receiveWrite(target: WriteTarget, body: ReadableStream<Uin
   return etag;
 }
 
-async function removeStaleUploads() {
+/** Messages from this driver are shown to people; file-system details (paths…) never are. */
+export class StorageError extends Error {}
+
+async function readMeta(dir: string): Promise<{ pathname: string }> {
+  try {
+    return JSON.parse(await readFile(join(dir, "meta.json"), "utf8"));
+  } catch {
+    throw new StorageError("This upload doesn't exist or has expired — start it again");
+  }
+}
+
+async function removeStaleUploads(pathname?: string) {
   const base = join(/*turbopackIgnore: true*/ storageRoot(), ".uploads");
   const entries = await readdir(base).catch(() => [] as string[]);
   for (const id of entries) {
     const info = await stat(join(base, id)).catch(() => null);
-    if (info && Date.now() - info.mtimeMs > STALE_UPLOAD_MS) await rm(join(base, id), { recursive: true, force: true });
+    if (!info) continue;
+    // Old leftovers, and earlier unfinished uploads of the same file (a restarted upload replaces them).
+    const same = pathname ? await readMeta(join(base, id)).then((m) => m.pathname === pathname, () => false) : false;
+    if (same || Date.now() - info.mtimeMs > STALE_UPLOAD_MS) await rm(join(base, id), { recursive: true, force: true });
   }
 }
 
@@ -173,7 +187,7 @@ export const local: StorageDriver = {
   },
   async createMultipart(pathname, contentType) {
     fileFor(pathname);
-    removeStaleUploads().catch(() => {});
+    await removeStaleUploads(pathname).catch(() => {});
     const id = randomBytes(16).toString("hex");
     const dir = uploadDir(id);
     await mkdir(dir, { recursive: true });
@@ -188,13 +202,20 @@ export const local: StorageDriver = {
   },
   async completeMultipart(pathname, uploadId, parts) {
     const dir = uploadDir(uploadId);
-    const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8")) as { pathname: string };
-    if (meta.pathname !== pathname) throw new Error("This upload belongs to another file");
+    const meta = await readMeta(dir);
+    if (meta.pathname !== pathname) throw new StorageError("This upload belongs to another file");
     const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
-    if (!sorted.length || sorted.some((p, i) => p.partNumber !== i + 1)) throw new Error("Parts must be numbered 1, 2, 3… without gaps");
+    if (!sorted.length || sorted.some((p, i) => p.partNumber !== i + 1)) throw new StorageError("Parts must be numbered 1, 2, 3… without gaps");
+    let total = 0;
     for (const p of sorted) {
       const etag = await readFile(join(dir, `${p.partNumber}.etag`), "utf8").catch(() => null);
-      if (!etag || etag !== p.etag.replace(/"/g, "")) throw new Error(`Part ${p.partNumber} is missing or different`);
+      if (!etag || etag !== p.etag.replace(/"/g, "")) throw new StorageError(`Part ${p.partNumber} is missing or different`);
+      total += (await stat(join(dir, `${p.partNumber}.part`))).size;
+    }
+    // Checked before assembling, so an oversized upload never takes twice its size on disk.
+    if (total > MAX_FILE_BYTES) {
+      await rm(dir, { recursive: true, force: true });
+      throw new StorageError("Videos can be up to 20 GB");
     }
     const dest = fileFor(pathname);
     await mkdir(dirname(dest), { recursive: true });

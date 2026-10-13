@@ -202,6 +202,10 @@ if (video.upload.provider === "vercel-blob") {
   const forgedRes = await fetch(forged, { method: "PUT", body: "x" });
   assert.equal(forgedRes.status, 403, `forged part URL → ${forgedRes.status}`);
   ok("tampered upload URL is refused");
+  r = await desktop.call("POST", `/api/videos/${video.id}/upload`, { op: "complete", file: "video", uploadId: "0".repeat(32), parts: [{ partNumber: 1, etag: "x" }] });
+  await expectStatus(r, 400, "completing an unknown upload is a clear 400");
+  assert.ok(!/[\\/](data|tmp|private|storage|Users|home)\b|ENOENT/.test(r.json.error), `no internal paths in errors: ${r.json.error}`);
+  ok("storage errors don't reveal server paths");
   if (video.upload.provider === "local") {
     const sig = new URL(urls[1]).searchParams.get("s");
     const expired = urls[1].replace(/([?&]e=)\d+/, "$11000");

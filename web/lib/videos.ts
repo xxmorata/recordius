@@ -25,6 +25,7 @@ import { HttpError, canManageWorkspace, type CurrentUser } from "./auth";
 import { VIDEO_ID_RE, hashPassword, isEmail, newVideoId, normalizeEmail, randomToken, verifyPassword } from "./ids";
 import { authSecret, secureCookies } from "./env";
 import { ipBucket } from "./client-ip";
+import { StorageError } from "./storage/local";
 
 import { PRIVACY_LABELS, type Comment, type Access, type LibraryScope, type Privacy, type Video, type VideoSource, type VideoStatus, type ViewerStats } from "./types";
 export { PRIVACY_LABELS };
@@ -313,7 +314,9 @@ export async function handleUpload(id: string, user: CurrentUser, raw: unknown) 
       if (!uploadId || !nums.length || nums.length > 100 || !nums.every((n) => Number.isInteger(n) && n >= 1 && n <= maxParts)) {
         throw new HttpError(400, `Ask for 1–100 part numbers between 1 and ${maxParts} (videos can be up to 20 GB)`);
       }
-      const urls = await Promise.all(nums.map((n) => partUrl(pathname, uploadId, n as number)));
+      const urls = await Promise.all(nums.map((n) => partUrl(pathname, uploadId, n as number))).catch(() => {
+        throw new HttpError(400, "This upload doesn't exist or has expired — start it again");
+      });
       return { urls: Object.fromEntries(nums.map((n, i) => [String(n), urls[i]])) };
     }
     case "complete": {
@@ -324,7 +327,10 @@ export async function handleUpload(id: string, user: CurrentUser, raw: unknown) 
       try {
         await finishMultipart(pathname, uploadId, parts as { partNumber: number; etag: string }[]);
       } catch (err) {
-        throw new HttpError(400, `The upload couldn't be finished: ${(err as Error).message}`);
+        // Our own storage messages are safe to show; anything else (file-system or bucket errors) is logged only.
+        if (err instanceof StorageError) throw new HttpError(400, `The upload couldn't be finished: ${err.message}`);
+        console.error("[recordius] finishing an upload failed", err);
+        throw new HttpError(400, "The upload couldn't be finished — the parts may have expired. Start the upload again.");
       }
       // Signed part URLs can't cap their own size, so check the assembled file.
       if (((await fileSize(pathname)) ?? 0) > (file === "video" ? MAX_VIDEO_BYTES : 5 * 1024 ** 2)) {
