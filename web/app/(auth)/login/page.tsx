@@ -5,6 +5,7 @@ import { Field, Input } from "@/components/ui";
 import { currentUser } from "@/lib/auth";
 import { schemaReady } from "@/lib/db";
 import { hasAnyUser, signupAllowed } from "@/lib/workspace";
+import { safeNextPath } from "@/lib/format";
 
 export const metadata = { title: "Sign in" };
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
     <>
       <h1 className="text-xl font-semibold">Welcome back</h1>
       <p className="mt-1 mb-6 text-sm text-ink-3">Sign in to your Recordius workspace.</p>
-      <AuthForm action="/api/auth/login" submitLabel="Sign in" redirectTo={next && /^\/(?![\/\\])/.test(next) ? next : "/library"}>
+      <AuthForm action="/api/auth/login" submitLabel="Sign in" redirectTo={safeNextPath(next) ?? "/library"}>
         <Field label="Email">
           <Input name="email" type="email" autoComplete="email" required autoFocus placeholder="you@company.com" />
         </Field>

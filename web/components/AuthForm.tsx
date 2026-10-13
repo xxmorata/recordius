@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Button, api } from "@/components/ui";
+import { safeNextPath } from "@/lib/format";
 
 type Props = {
   action: string;
@@ -26,7 +27,7 @@ export function AuthForm({ action, submitLabel, children, redirectTo = "/library
     const data = Object.fromEntries(new FormData(e.currentTarget).entries());
     try {
       await api(action, { method: "POST", json: { ...data, ...extra } });
-      router.replace(redirectTo);
+      router.replace(safeNextPath(redirectTo) ?? "/library");
       router.refresh();
     } catch (err) {
       setError((err as Error).message);

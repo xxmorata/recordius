@@ -66,3 +66,18 @@ export function initials(name: string): string {
 export function pluralize(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
+
+/**
+ * Returns an in-app path for a post-login redirect, or null. Resolves the value the way a browser
+ * would (so `//evil`, `/\evil`, control characters etc. can't escape) and keeps only path+query+hash.
+ */
+export function safeNextPath(raw: string | null | undefined): string | null {
+  if (!raw || /[\x00-\x1f\x7f\s]/.test(raw) || !/^\/(?![\/\\])/.test(raw)) return null;
+  try {
+    const u = new URL(raw, "http://recordius.invalid");
+    if (u.origin !== "http://recordius.invalid" || !u.pathname.startsWith("/")) return null;
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return null;
+  }
+}
