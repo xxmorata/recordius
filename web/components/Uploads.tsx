@@ -1,10 +1,11 @@
 "use client";
 
-import { put } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Link2, UploadCloud, X } from "lucide-react";
 import { api, cx } from "./ui";
+import { uploadThumbnail, uploadVideoFile } from "@/lib/upload-client";
+import type { UploadGrant } from "@/lib/storage/types";
 import { useToast } from "./Toast";
 
 type Item = {
@@ -24,7 +25,7 @@ export const useUploads = () => useContext(UploadContext);
 const MAX_BYTES = 20 * 1024 ** 3;
 const PLAYABLE = /^video\/(mp4|quicktime|webm|x-m4v)$/;
 
-type Created = { id: string; shareUrl: string; upload: { videoPathname: string; videoToken: string; thumbPathname: string; thumbToken: string } };
+type Created = { id: string; shareUrl: string; upload: UploadGrant };
 
 /** Reads duration and grabs a poster frame locally, before anything is uploaded. */
 function inspect(file: File): Promise<{ durationMs: number; thumb: Blob | null }> {
@@ -95,19 +96,15 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         created = await api<Created>("/api/videos", { method: "POST", json: { title, mimeType, source: "upload" } });
         patch(key, { state: "uploading", shareUrl: created.shareUrl });
         router.refresh();
-        const { videoPathname, videoToken, thumbPathname, thumbToken } = created.upload;
         if (thumb) {
-          await put(thumbPathname, thumb, { access: "private", token: thumbToken, contentType: "image/jpeg" });
-          await api(`/api/videos/${created.id}/thumbnail`, { method: "POST" });
+          // A missing poster isn't worth failing the upload for.
+          await uploadThumbnail(created.id, created.upload, thumb, abort.signal)
+            .then(() => api(`/api/videos/${created!.id}/thumbnail`, { method: "POST" }))
+            .catch((err) => {
+              if (abort.signal.aborted) throw err;
+            });
         }
-        await put(videoPathname, file, {
-          access: "private",
-          token: videoToken,
-          contentType: mimeType,
-          multipart: file.size > 8 * 1024 ** 2,
-          abortSignal: abort.signal,
-          onUploadProgress: (e) => patch(key, { progress: Math.min(99, Math.round(e.percentage)) }),
-        });
+        await uploadVideoFile(created.id, created.upload, file, mimeType, abort.signal, (f) => patch(key, { progress: Math.min(99, Math.round(f * 100)) }));
         await api(`/api/videos/${created.id}/complete`, { method: "POST", json: { durationMs, size: file.size } });
         patch(key, { state: "done", progress: 100 });
         router.refresh();

@@ -1,4 +1,5 @@
 import { sql } from "./db";
+import { deletePrefix } from "./blob";
 import { HttpError, canManageWorkspace, type CurrentUser, type Role } from "./auth";
 import { hashPassword, hashToken, isEmail, normalizeEmail, randomToken, verifyPassword } from "./ids";
 import { openSignupAllowed } from "./env";
@@ -39,9 +40,13 @@ function validateSignup(name: string, email: string, password: string) {
   if (password.length < 8) throw new HttpError(400, "Use a password of at least 8 characters");
 }
 
+// Unknown emails still cost one scrypt run, so response times don't reveal which accounts exist.
+let dummyHash: Promise<string> | null = null;
+
 export async function authenticate(email: string, password: string): Promise<string> {
   const rows = await sql()`select id, password_hash from users where email = ${normalizeEmail(email)}`;
-  const ok = rows[0] ? await verifyPassword(password, rows[0].password_hash) : false;
+  dummyHash ??= hashPassword(randomToken(16));
+  const ok = await verifyPassword(password, rows[0]?.password_hash ?? (await dummyHash)).then((v) => v && Boolean(rows[0]));
   if (!ok) throw new HttpError(401, "Wrong email or password");
   return rows[0].id as string;
 }
@@ -51,8 +56,10 @@ export async function changePassword(user: CurrentUser, current: string, next: s
   if (!(await verifyPassword(current, rows[0].password_hash))) throw new HttpError(400, "Your current password is wrong");
   if (next.length < 8) throw new HttpError(400, "Use a password of at least 8 characters");
   await sql()`update users set password_hash = ${await hashPassword(next)} where id = ${user.id}`;
-  // Sign out every other session.
+  // Sign out every other session and disconnect the desktop apps: a password change is often a reaction
+  // to a suspected leak. (The caller signs this browser in again.)
   await sql()`delete from sessions where user_id = ${user.id}`;
+  await sql()`delete from device_tokens where user_id = ${user.id}`;
 }
 
 export async function updateProfile(user: CurrentUser, patch: { name?: string; avatarPath?: string | null }) {
@@ -111,6 +118,8 @@ export async function removeMember(user: CurrentUser, memberId: string) {
     await tx`update videos set owner_id = ${user.id} where owner_id = ${memberId} and workspace_id = ${user.workspace.id}`;
     await tx`delete from users where id = ${memberId}`;
   });
+  // Their profile picture goes with the account.
+  await deletePrefix(`avatars/${memberId}/`).catch((err) => console.error("avatar cleanup failed", memberId, err));
 }
 
 export async function updateWorkspace(user: CurrentUser, patch: { name?: string; defaultPrivacy?: Privacy }) {
@@ -195,12 +204,13 @@ export async function acceptInvite(token: string, input: { name: string; email: 
 export async function createPasswordReset(user: CurrentUser, memberId: string): Promise<string> {
   const member = await sql()`select role from memberships where workspace_id = ${user.workspace.id} and user_id = ${memberId}`;
   if (!member[0]) throw new HttpError(404, "Member not found");
+  // You change your own password in Settings, with the current one — a reset link for yourself would let
+  // anyone holding a stolen session take the account over without knowing the password.
+  if (memberId === user.id) throw new HttpError(400, "Change your own password in Settings → Profile");
   // Same rules as changing roles: nobody resets the owner's password, and only the owner resets an admin's.
-  if (memberId !== user.id) {
-    if (!canManageWorkspace(user)) throw new HttpError(403, "Only admins can reset passwords");
-    if (member[0].role === "owner") throw new HttpError(403, "The owner's password can only be reset by the owner");
-    if (member[0].role === "admin" && user.role !== "owner") throw new HttpError(403, "Only the owner can reset an admin's password");
-  }
+  if (!canManageWorkspace(user)) throw new HttpError(403, "Only admins can reset passwords");
+  if (member[0].role === "owner") throw new HttpError(403, "The owner's password can only be reset by the owner");
+  if (member[0].role === "admin" && user.role !== "owner") throw new HttpError(403, "Only the owner can reset an admin's password");
   const token = randomToken(24);
   await sql()`insert into password_resets (user_id, token_hash, expires_at) values (${memberId}, ${hashToken(token)}, now() + interval '2 days')`;
   return token;

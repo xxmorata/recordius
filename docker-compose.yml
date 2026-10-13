@@ -1,0 +1,68 @@
+# Recordius on your own server: database + app, files on a local volume. Everything stays on this machine.
+#
+#   cp .env.example .env        # then set AUTH_SECRET and APP_URL (see the comments in the file)
+#   docker compose up -d        # http://localhost:3000 (or your APP_URL)
+#
+# Automatic HTTPS with Let's Encrypt (point your domain's DNS at this server first, set DOMAIN in .env):
+#   docker compose --profile https up -d
+#
+# Updating:  git pull && docker compose up -d --build     (database migrations run on start)
+# Backups:   the `db` and `files` volumes (docker compose exec db pg_dump -U recordius recordius > backup.sql)
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: recordius
+      POSTGRES_DB: recordius
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recordius}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recordius -d recordius"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: "3000" # inside the container; the port on this machine is HTTP_PORT below
+      DATABASE_URL: postgres://recordius:${POSTGRES_PASSWORD:-recordius}@db:5432/recordius
+      # Files go to the `files` volume unless .env configures S3 (STORAGE=s3) or Vercel Blob.
+      STORAGE_DIR: /data
+      # Behind the bundled Caddy (or your own proxy), the real client IP is the last X-Forwarded-For entry.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+    volumes:
+      - files:/data
+    ports:
+      # Only this machine can reach the app directly; the world goes through the https profile (or your own
+      # proxy), which also gives the password rate limiting the real client IP. HTTP_BIND=0.0.0.0 opens it.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-3000}:3000"
+
+  # Optional: HTTPS for DOMAIN with automatic certificates.  docker compose --profile https up -d
+  https:
+    profiles: ["https"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    command: ["sh", "-c", 'if [ -z "$$DOMAIN" ]; then echo "Set DOMAIN in .env to use the https profile"; exit 1; fi; exec caddy reverse-proxy --from "$$DOMAIN" --to app:3000']
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy:/data
+
+volumes:
+  db:
+  files:
+  caddy:

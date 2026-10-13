@@ -24,7 +24,7 @@ const {
 const config = require("./config");
 const api = require("./api");
 const updater = require("./updater");
-const { LiveUploader, uploadFile, uploadThumbnail } = require("./uploader");
+const { LiveUploader, uploadTarget, uploadFile, uploadThumbnail } = require("./uploader");
 const library = require("./library");
 
 const APP_DIR = path.join(__dirname, "..");
@@ -38,6 +38,7 @@ const PANEL_WIDTH = 380;
 const PANEL_MARGIN = 28; // transparent space around the panel for its CSS shadow
 const PANEL_WINDOW = PANEL_WIDTH + PANEL_MARGIN * 2;
 const BUBBLE_MARGIN = 24;
+const CONTROLS_WIDTH = 60; // bar is 52 px; the window hugs it (no shadow to make room for)
 const E2E = Boolean(process.env.RECORDIUS_E2E);
 const log = (...args) => process.env.RECORDIUS_DEBUG && console.log("[recordius]", ...args);
 
@@ -206,7 +207,7 @@ function hideCamera() {
 function showControls(display) {
   const w = createWindow(
     "controls",
-    { width: 64, height: 320, x: display.workArea.x + 16, y: Math.round(display.workArea.y + display.workArea.height / 2 - 160), transparent: true, hasShadow: false, alwaysOnTop: true },
+    { width: CONTROLS_WIDTH, height: 380, x: display.workArea.x + 16, y: Math.round(display.workArea.y + display.workArea.height / 2 - 190), transparent: true, hasShadow: false, alwaysOnTop: true },
     "controls.html",
   );
   // Keep the control bar out of the recording (Loom excludes its windows via ScreenCaptureKit).
@@ -374,21 +375,72 @@ function handleDeepLink(raw) {
   log("deep link", action);
   if (action === "connect") {
     showPanel();
-    connect(url.searchParams.get("server"), url.searchParams.get("token")).catch((err) => {
+    connectFromLink(url.searchParams.get("server"), url.searchParams.get("token"), url.searchParams.get("state")).catch((err) => {
       dialog.showErrorBox("Couldn't connect Recordius", err.message);
     });
-  } else if (action === "record") {
-    if (state === "idle") startRecording();
-  } else if (action === "stop") {
-    stopRecording();
   } else {
+    // Other links only bring the app forward: no website can start or stop a recording.
     showPanel();
   }
 }
 
+/**
+ * Any web page can open recordius:// links, so a connect link is only trusted silently when it carries the
+ * one-time code from the "Continue in browser" step the user just took in this app. Anything else needs
+ * an explicit OK in a native dialog that names the server.
+ */
+let pendingConnect = null; // { state, until }
+
+function startConnect() {
+  pendingConnect = { state: require("node:crypto").randomBytes(16).toString("hex"), until: Date.now() + 30 * 60 * 1000 };
+  return pendingConnect.state;
+}
+
+async function connectFromLink(server, token, state) {
+  const base = normalizeServer(server);
+  if (!base || !token) throw new Error("That connection link isn't valid");
+  const expected = pendingConnect && pendingConnect.until > Date.now() ? pendingConnect.state : null;
+  if (!expected || state !== expected) {
+    const current = config.isConnected() ? config.load().server : null;
+    const host = new URL(base).host;
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      buttons: ["Cancel", "Connect"],
+      defaultId: 0,
+      cancelId: 0,
+      message: `Connect Recordius to ${host}?`,
+      detail:
+        `A web page asked to connect this Mac to ${host}. Only continue if you just clicked “Connect desktop app” on that site yourself — your recordings will be uploaded there.` +
+        (current && current !== base ? `\n\nThis replaces your connection to ${new URL(current).host}.` : ""),
+    });
+    if (response !== 1) return;
+  }
+  pendingConnect = null;
+  await connect(base, token);
+}
+
 async function openLibrary() {
   const server = api.serverUrl();
-  if (server) shell.openExternal(`${server}/library`);
+  if (server) openWeb(`${server}/library`);
+}
+
+/** Opens a web page in the browser — never another kind of URL (file:, smb:, app schemes…). */
+function openWeb(url) {
+  try {
+    const u = new URL(String(url));
+    if (u.protocol === "https:" || u.protocol === "http:") shell.openExternal(u.toString());
+  } catch {}
+}
+
+/**
+ * The upload session from the server, checked before it's used for file names and links: a misbehaving
+ * server must not be able to make the app write outside ~/Movies/Recordius or open arbitrary URLs.
+ */
+function checkedVideo(video) {
+  if (!video || !/^[a-f0-9]{32}$/.test(String(video.id))) throw new Error("The server sent an invalid video id");
+  const ext = String(video.upload?.videoPathname ?? "").split(".").pop();
+  if (!["mp4", "webm"].includes(ext)) throw new Error("The server sent an unexpected file type");
+  return { ...video, ext, shareUrl: `${api.serverUrl()}/share/${video.id}` };
 }
 
 // ───────────────────────────── recording lifecycle ─────────────────────────────
@@ -451,10 +503,10 @@ async function startRecording(opts) {
     // Like Loom's prepareForStart: acquire capture streams and open the upload session during the countdown.
     const prepared = await recorderRequest("rec:prepare", plan, "rec:prepared");
     const countdown = plan.countdown === false ? Promise.resolve() : showCountdown(display);
-    const video = await api.createVideo(defaultTitle(), prepared.mimeType);
+    const video = checkedVideo(await api.createVideo(defaultTitle(), prepared.mimeType));
     log("session created", video.id);
     fs.mkdirSync(config.RECORDINGS_DIR, { recursive: true });
-    const ext = video.upload.videoPathname.split(".").pop();
+    const ext = video.ext;
     const localPath = path.join(config.RECORDINGS_DIR, `${stamp()} ${video.id}.${ext}`);
     rec = {
       video,
@@ -462,17 +514,12 @@ async function startRecording(opts) {
       display,
       localPath,
       mimeType: prepared.mimeType,
-      uploader: new LiveUploader({
-        pathname: video.upload.videoPathname,
-        token: video.upload.videoToken,
-        access: video.upload.access ?? "private",
-        contentType: prepared.mimeType.split(";")[0],
-        localPath,
-      }),
+      target: uploadTarget(video.upload, video.id, api.upload),
       startedAt: 0,
       pausedAt: 0,
       pausedTotal: 0,
     };
+    rec.uploader = new LiveUploader({ target: rec.target, contentType: prepared.mimeType.split(";")[0], localPath });
     if (prepared.warning) notify("Recordius", prepared.warning);
     await countdown;
     await cameraReady; // never start recording before the bubble shows a picture
@@ -512,7 +559,7 @@ async function stopRecording() {
   // Exactly Loom's openSharePageAndCopyUrl: the link is ready the moment you stop.
   if (!E2E) {
     clipboard.writeText(sessionRec.video.shareUrl);
-    shell.openExternal(sessionRec.video.shareUrl);
+    openWeb(sessionRec.video.shareUrl);
   }
   notify("Link copied to clipboard", "Finishing the upload — your video will play in a few seconds.");
   await finishUpload(sessionRec, durationMs);
@@ -528,7 +575,7 @@ async function finishUpload(sessionRec, durationMs) {
     await api.completeVideo(video.id, durationMs, sessionRec.uploader.totalBytes);
     library.removePending(video.id);
     library.markUploaded(video.id, localPath);
-    notify("Your video is ready", video.title ?? video.shareUrl, () => shell.openExternal(video.shareUrl));
+    notify("Your video is ready", video.title ?? video.shareUrl, () => openWeb(video.shareUrl));
     win.panel?.webContents.send("panel:recent-changed");
   } catch (err) {
     console.error("[main] upload failed", err);
@@ -591,12 +638,12 @@ function retryFailedUploads({ manual = false } = {}) {
           throw err;
         }
         const ext = path.extname(p.localPath).slice(1);
-        await uploadFile({ pathname: upload.videoPathname, token: upload.videoToken, access: upload.access ?? "private", contentType: p.contentType ?? (ext === "webm" ? "video/webm" : "video/mp4"), localPath: p.localPath });
+        await uploadFile(uploadTarget(upload, p.id, api.upload), p.localPath, p.contentType ?? (ext === "webm" ? "video/webm" : "video/mp4"));
         await api.completeVideo(p.id, p.durationMs, fs.statSync(p.localPath).size);
         library.removePending(p.id);
         library.markUploaded(p.id, p.localPath);
         done++;
-        notify("Upload finished", p.title ?? p.shareUrl, () => shell.openExternal(p.shareUrl));
+        notify("Upload finished", p.title ?? p.shareUrl, () => openWeb(p.shareUrl));
       } catch (err) {
         lastError = err;
         library.updatePending(p.id, { failedAt: Date.now(), error: err.message });
@@ -776,7 +823,7 @@ ipcMain.handle("panel:copy", (_e, text) => {
   clipboard.writeText(String(text ?? ""));
   return true;
 });
-ipcMain.on("panel:open-url", (_e, url) => /^https?:\/\//.test(String(url)) && shell.openExternal(url));
+ipcMain.on("panel:open-url", (_e, url) => openWeb(url));
 ipcMain.on("panel:recordings-folder", () => shell.openPath(config.RECORDINGS_DIR));
 ipcMain.on("panel:quit", () => app.quit());
 
@@ -793,7 +840,7 @@ ipcMain.handle("media:status", () => systemPreferences.getMediaAccessStatus("scr
 ipcMain.handle("account:open-connect", (_e, server) => {
   const base = normalizeServer(server);
   if (!base) throw new Error("Enter your workspace address, e.g. https://recordius.yourstudio.com");
-  shell.openExternal(`${base}/download`);
+  shell.openExternal(`${base}/download?connect=${startConnect()}`);
   return base;
 });
 ipcMain.handle("account:paste-code", async (_e, code) => {
@@ -810,8 +857,12 @@ ipcMain.handle("account:refresh", async () => {
 ipcMain.on("account:signout", () => signOut());
 
 // updates
-ipcMain.handle("update:check", () => updater.check());
-ipcMain.handle("update:install", async (_e, info) => {
+// The renderer only asks; what gets installed is always the main process's own check result.
+let lastUpdateCheck = null;
+ipcMain.handle("update:check", async () => (lastUpdateCheck = await updater.check()));
+ipcMain.handle("update:install", async () => {
+  const info = lastUpdateCheck?.available ? lastUpdateCheck : await updater.check();
+  if (!info.available) throw new Error("No update is available");
   await updater.install(info, (p) => win.panel?.webContents.send("update:progress", p));
   app.relaunch();
   app.exit(0);
@@ -834,15 +885,24 @@ ipcMain.on("controls:pause", () => togglePause());
 ipcMain.on("controls:restart", () => cancelRecording({ restart: true }));
 ipcMain.on("controls:cancel", () => cancelRecording());
 ipcMain.on("controls:camera", () => toggleCameraBubble());
+ipcMain.on("controls:size", (_e, barHeight) => {
+  const w = win.controls;
+  if (!w || w.isDestroyed() || !Number.isFinite(barHeight)) return;
+  const height = Math.min(Math.max(Math.round(barHeight) + 8, 120), 600);
+  const [, oldHeight] = w.getContentSize();
+  if (oldHeight === height) return;
+  const [x, y] = w.getPosition();
+  w.setContentSize(CONTROLS_WIDTH, height);
+  w.setPosition(x, Math.round(y + (oldHeight - height) / 2)); // stay centred where it was
+});
 ipcMain.handle("controls:camera-state", () => ({ hasCamera: rec?.plan.mode === "screen-cam", visible: Boolean(win.camera?.isVisible()) }));
 
 // recorder
 ipcMain.on("rec:chunk", (_e, chunk) => rec?.uploader.push(Buffer.from(chunk)));
 ipcMain.on("rec:thumbnail", (_e, jpeg) => {
   if (!rec) return;
-  const { thumbPathname, thumbToken, access } = rec.video.upload;
   const id = rec.video.id;
-  uploadThumbnail({ pathname: thumbPathname, token: thumbToken, access: access ?? "private" }, Buffer.from(jpeg))
+  uploadThumbnail(rec.target, Buffer.from(jpeg))
     .then(() => api.markThumbnail(id))
     .catch((err) => console.warn("[main] thumbnail upload failed", err.message));
 });
@@ -935,4 +995,4 @@ app.on("window-all-closed", (e) => e.preventDefault()); // menu-bar app: keep ru
 app.on("before-quit", () => (quitting = true));
 app.on("will-quit", () => globalShortcut.unregisterAll());
 
-if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, hostname: os.hostname() });
+if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, handleDeepLink, startConnect, hostname: os.hostname() });

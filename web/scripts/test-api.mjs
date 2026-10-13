@@ -44,6 +44,42 @@ function client() {
   return { call, setBearer: (t) => (bearer = t), jar };
 }
 
+// ───────── uploads, whatever storage the server uses (the same two paths as the desktop app) ─────────
+
+async function uploadVideoParts(c, video, buffers) {
+  const g = video.upload;
+  if (g.provider === "vercel-blob") {
+    const opts = { access: "private", token: g.videoToken, contentType: "video/mp4" };
+    const mpu = await createMultipartUpload(g.videoPathname, opts);
+    const parts = [];
+    for (let i = 0; i < buffers.length; i++) parts.push(await uploadPart(g.videoPathname, buffers[i], { ...opts, uploadId: mpu.uploadId, key: mpu.key, partNumber: i + 1 }));
+    await completeMultipartUpload(g.videoPathname, parts, { ...opts, uploadId: mpu.uploadId, key: mpu.key });
+    return;
+  }
+  const api = (body) => c.call("POST", `/api/videos/${video.id}/upload`, body);
+  const created = await api({ op: "create", file: "video" });
+  assert.equal(created.status, 200, `create upload: ${created.text}`);
+  const { uploadId } = created.json;
+  const { urls } = (await api({ op: "parts", file: "video", uploadId, partNumbers: buffers.map((_, i) => i + 1) })).json;
+  const parts = [];
+  for (let i = 0; i < buffers.length; i++) {
+    const res = await fetch(urls[i + 1], { method: "PUT", body: buffers[i] });
+    assert.equal(res.status, 200, `part ${i + 1}: ${res.status} ${await res.clone().text()}`);
+    parts.push({ partNumber: i + 1, etag: res.headers.get("etag") });
+  }
+  const done = await api({ op: "complete", file: "video", uploadId, parts });
+  assert.equal(done.status, 200, `complete upload: ${done.text}`);
+}
+
+async function uploadThumb(c, video, jpeg) {
+  const g = video.upload;
+  if (g.provider === "vercel-blob") return put(g.thumbPathname, jpeg, { access: "private", token: g.thumbToken, contentType: "image/jpeg" });
+  const r = await c.call("POST", `/api/videos/${video.id}/upload`, { op: "put", file: "thumb" });
+  assert.equal(r.status, 200, r.text);
+  const res = await fetch(r.json.url, { method: "PUT", body: jpeg, headers: { "content-type": r.json.contentType } });
+  assert.equal(res.status, 200, `thumbnail PUT ${res.status}`);
+}
+
 async function expectStatus(res, status, label) {
   assert.equal(res.status, status, `${label}: expected ${status}, got ${res.status} ${res.text.slice(0, 200)}`);
   ok(label);
@@ -120,7 +156,7 @@ ok("device listed");
 r = await desktop.call("POST", "/api/desktop/connect", { deviceName: "nope" });
 await expectStatus(r, 403, "device token can't mint device tokens");
 
-section("recording flow (real private-blob upload)");
+section("recording flow (real upload to the configured storage)");
 r = await desktop.call("POST", "/api/videos", { title: "API smoke test", mimeType: "video/mp4" });
 await expectStatus(r, 200, "recording session created");
 const video = r.json;
@@ -133,21 +169,47 @@ r = await member.call("GET", `/api/videos/${video.id}`);
 await expectStatus(r, 200, "member sees it while recording");
 assert.equal(r.json.status, "recording");
 assert.equal(r.json.videoUrl, null);
-const { videoPathname: p, videoToken: token, thumbPathname, thumbToken } = video.upload;
-const mpu = await createMultipartUpload(p, { access: "private", token, contentType: "video/mp4" });
-const partA = Buffer.alloc(5 * 1024 * 1024, 1);
+console.log(`  (storage: ${video.upload.provider})`);
+const p = video.upload.videoPathname;
+const partA = Buffer.alloc(video.upload.partSize ?? 5 * 1024 * 1024, 1);
 const partB = Buffer.from("tail");
-const parts = [
-  await uploadPart(p, partA, { access: "private", token, uploadId: mpu.uploadId, key: mpu.key, partNumber: 1 }),
-  await uploadPart(p, partB, { access: "private", token, uploadId: mpu.uploadId, key: mpu.key, partNumber: 2 }),
-];
-await completeMultipartUpload(p, parts, { access: "private", token, uploadId: mpu.uploadId, key: mpu.key, contentType: "video/mp4" });
-ok("multipart upload with scoped token");
-await put(thumbPathname, Buffer.from("fakejpeg"), { access: "private", token: thumbToken, contentType: "image/jpeg" });
+r = await desktop.call("POST", `/api/videos/${video.id}/complete`, { durationMs: 4200, size: 10 });
+await expectStatus(r, 409, "can't complete before the file is uploaded");
+await uploadVideoParts(desktop, video, [partA, partB]);
+ok("multipart upload (2 parts)");
+await uploadThumb(desktop, video, Buffer.from("fakejpeg"));
 r = await desktop.call("POST", `/api/videos/${video.id}/thumbnail`);
 await expectStatus(r, 200, "thumbnail marked");
-await assert.rejects(() => createMultipartUpload(`videos/${video.id}/evil.mp4`, { access: "private", token }), "scoped token can't write elsewhere");
-ok("scoped token can't write elsewhere");
+if (video.upload.provider === "vercel-blob") {
+  await assert.rejects(() => createMultipartUpload(`videos/${video.id}/evil.mp4`, { access: "private", token: video.upload.videoToken }), "scoped token can't write elsewhere");
+  ok("scoped token can't write elsewhere");
+} else {
+  r = await member.call("POST", `/api/videos/${video.id}/upload`, { op: "create", file: "video" });
+  await expectStatus(r, 403, "others can't get upload URLs");
+  r = await anon.call("POST", `/api/videos/${video.id}/upload`, { op: "create", file: "video" });
+  await expectStatus(r, 401, "anonymous can't get upload URLs");
+  r = await desktop.call("POST", `/api/videos/${video.id}/upload`, { op: "create", file: "../../etc/passwd" });
+  await expectStatus(r, 400, "only the video's own files can be uploaded");
+  r = await desktop.call("POST", `/api/videos/${video.id}/upload`, { op: "put", file: "video" });
+  await expectStatus(r, 400, "videos can't skip the multipart path");
+  r = await desktop.call("POST", `/api/videos/${video.id}/upload`, { op: "parts", file: "video", uploadId: "x", partNumbers: [0] });
+  await expectStatus(r, 400, "part numbers are validated");
+  // a signed URL can't be bent to another part or file
+  const { uploadId } = (await desktop.call("POST", `/api/videos/${video.id}/upload`, { op: "create", file: "video" })).json;
+  const { urls } = (await desktop.call("POST", `/api/videos/${video.id}/upload`, { op: "parts", file: "video", uploadId, partNumbers: [1] })).json;
+  const forged = urls[1].replace(/([?&](?:n|partNumber|PartNumber)=)1(&|$)/, "$12$2");
+  assert.notEqual(forged, urls[1]);
+  const forgedRes = await fetch(forged, { method: "PUT", body: "x" });
+  assert.equal(forgedRes.status, 403, `forged part URL → ${forgedRes.status}`);
+  ok("tampered upload URL is refused");
+  if (video.upload.provider === "local") {
+    const sig = new URL(urls[1]).searchParams.get("s");
+    const expired = urls[1].replace(/([?&]e=)\d+/, "$11000");
+    assert.equal((await fetch(expired, { method: "PUT", body: "x" })).status, 403);
+    assert.ok(sig);
+    ok("expired upload URL is refused");
+  }
+}
 r = await desktop.call("POST", `/api/videos/${video.id}/complete`, { durationMs: 4200, size: partA.length + partB.length });
 await expectStatus(r, 200, "complete");
 r = await member.call("GET", `/api/videos/${video.id}`);
@@ -162,9 +224,21 @@ const ranged = await fetch(r.json.videoUrl, { headers: { range: `bytes=${partA.l
 assert.equal(ranged.status, 206);
 assert.equal(await ranged.text(), "tail");
 ok("range requests work (seeking)");
-const plain = await fetch(`https://${new URL(r.json.videoUrl).host}/${p}`);
-assert.equal(plain.status, 403);
-ok("raw blob url is private");
+const plain = await fetch(r.json.videoUrl.split("?")[0]);
+assert.ok([400, 401, 403, 404].includes(plain.status), `unsigned URL → ${plain.status}`);
+ok("the file is private without a signed URL");
+{
+  const u = new URL(r.json.videoUrl);
+  for (const k of ["e", "X-Amz-Expires"]) if (u.searchParams.has(k)) u.searchParams.set(k, k === "e" ? String(Date.now() + 10 ** 10) : "604800");
+  if (u.toString() !== r.json.videoUrl) {
+    assert.equal((await fetch(u)).status, 403);
+    ok("extending a signed URL's lifetime breaks the signature");
+  }
+}
+const dl = await fetch(r.json.downloadUrl, { method: "GET", headers: { range: "bytes=0-0" } });
+assert.ok([200, 206].includes(dl.status));
+if (video.upload.provider !== "vercel-blob") assert.match(dl.headers.get("content-disposition") ?? "", /attachment/);
+ok("download URL works");
 
 section("privacy rules");
 r = await owner.call("GET", "/api/workspace/members");
@@ -338,15 +412,18 @@ await expectStatus(r, 200, "expiry removed");
   fd.set("file", new File([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9])], "t.jpg", { type: "image/jpeg" }));
   r = await owner.call("POST", `/api/videos/${video.id}/thumbnail`, fd);
   await expectStatus(r, 200, "custom thumbnail saved");
-  const first = new URL(r.json.thumbUrl).pathname;
+  // the stored file name, whether the signed URL carries it in its path (blob, S3) or a query (local storage)
+  const fileOf = (url) => new URL(url).searchParams.get("p") ?? new URL(url).pathname;
+  const first = fileOf(r.json.thumbUrl);
   assert.ok(/thumb-[\w-]+\.jpg$/.test(first));
   const fd2 = new FormData();
   fd2.set("file", new File([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 7])], "t.jpg", { type: "image/jpeg" }));
   r = await owner.call("POST", `/api/videos/${video.id}/thumbnail`, fd2);
-  assert.notEqual(new URL(r.json.thumbUrl).pathname, first, "new file name, so caches can't serve the old one");
+  const second = fileOf(r.json.thumbUrl);
+  assert.notEqual(second, first, "new file name, so caches can't serve the old one");
   r = await guest.call("GET", `/api/videos/${video.id}`);
-  assert.equal(new URL(r.json.thumbUrl).pathname.split("/").pop(), new URL(r.json.thumbUrl).pathname.split("/").pop());
-  assert.ok(new URL(r.json.thumbUrl).pathname.includes("thumb-"));
+  assert.equal(fileOf(r.json.thumbUrl), second);
+  assert.equal((await fetch(r.json.thumbUrl)).status, 200);
   ok("viewers get the custom thumbnail");
   const fd3 = new FormData();
   fd3.set("file", new File([Buffer.from("x")], "t.png", { type: "image/png" }));
@@ -363,7 +440,7 @@ await expectStatus(r, 200, "expiry removed");
   const up = r.json;
   r = await owner.call("GET", `/api/videos/${up.id}`);
   assert.equal(r.json.source, "upload");
-  await put(up.upload.videoPathname, Buffer.alloc(1024, 3), { access: "private", token: up.upload.videoToken, contentType: "video/mp4" });
+  await uploadVideoParts(owner, up, [Buffer.alloc(1024, 3)]);
   r = await owner.call("POST", `/api/videos/${up.id}/complete`, { durationMs: 3000, size: 1024 });
   await expectStatus(r, 200, "uploaded file completed");
   r = await owner.call("GET", "/api/videos?scope=mine&limit=1");
@@ -470,7 +547,7 @@ await expectStatus(r, 401, "re-upload needs sign-in");
   await expectStatus(r, 200, "owner gets fresh upload tokens");
   const up = r.json.upload;
   assert.equal(up.videoPathname, fresh.upload.videoPathname, "same file as before");
-  await put(up.videoPathname, Buffer.alloc(1024, 7), { access: "private", token: up.videoToken, contentType: "video/mp4" });
+  await uploadVideoParts(desktop, { id: fresh.id, upload: up }, [Buffer.alloc(1024, 7)]);
   ok("upload with the reissued token");
   r = await desktop.call("POST", `/api/videos/${fresh.id}/complete`, { durationMs: 2000, size: 1024 });
   await expectStatus(r, 200, "complete after retry");
@@ -502,6 +579,39 @@ r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "cap te
   await expectStatus(r, 200, "a blocked client's attempts don't lock out a real viewer");
 }
 r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: null });
+
+section("abuse protection");
+r = await anon.call("POST", "/api/auth/login", { email: `owner${stamp}@test.dev`, password: "password1" }, { headers: { origin: "https://evil.example" } });
+await expectStatus(r, 403, "cross-site POST refused (CSRF)");
+{
+  const res = await fetch(`${BASE}/api/auth/login`, { method: "POST", headers: { "content-type": "text/plain" }, body: JSON.stringify({ email: "x@y.z", password: "p" }) });
+  assert.equal(res.status, 415);
+  ok("form-style (text/plain) bodies refused");
+}
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { title: "API smoke test" }, { headers: { origin: BASE } });
+await expectStatus(r, 200, "same-site POST with Origin allowed");
+{
+  const guesser = client();
+  const codes = [];
+  for (let i = 0; i < 11; i++) codes.push((await guesser.call("POST", "/api/auth/login", { email: `nobody${stamp}@test.dev`, password: `guess${i}` })).status);
+  assert.deepEqual(codes, [...Array(10).fill(401), 429]);
+  ok("sign-in guessing is limited per account (10 per 15 min)");
+  const fine = client();
+  await expectStatus(await fine.call("POST", "/api/auth/login", { email: `owner${stamp}@test.dev`, password: "password1" }), 200, "other accounts can still sign in");
+}
+r = await owner.call("POST", `/api/videos/${video.id}/access`, { email: `not-registered-${stamp}@test.dev` });
+await expectStatus(r, 404, "sharing with an email that has no account is refused");
+assert.equal(r.json.code, "no_account");
+r = await anon.call("GET", `/api/videos/${video.id}`);
+assert.equal(r.json.owner.email, "", "link viewers don't get the owner's email");
+assert.ok(r.json.owner.name);
+ok("owner's email hidden from link viewers");
+{
+  const fresh = (await desktop.call("POST", "/api/videos", { title: "No thumb", mimeType: "video/mp4" })).json;
+  r = await desktop.call("POST", `/api/videos/${fresh.id}/thumbnail`);
+  await expectStatus(r, 409, "can't mark a thumbnail that wasn't uploaded");
+  await desktop.call("DELETE", `/api/videos/${fresh.id}`);
+}
 
 section("library & lifecycle");
 r = await owner.call("GET", "/api/videos?scope=mine");
@@ -540,13 +650,30 @@ const form = new FormData();
 form.set("file", new File([Buffer.from([0xff, 0xd8, 0xff, 0xdb, 1, 2, 3])], "a.jpg", { type: "image/jpeg" }));
 r = await owner.call("POST", "/api/profile/avatar", form);
 await expectStatus(r, 200, "avatar upload");
-assert.ok(r.json.avatarUrl.includes("private.blob"));
+assert.equal((await fetch(r.json.avatarUrl)).status, 200, "avatar is served from a signed URL");
+assert.ok([400, 401, 403, 404].includes((await fetch(r.json.avatarUrl.split("?")[0])).status), "avatar isn't public");
+// a device token (it lives in a file on the Mac) only works for recording, never for account changes
+r = await desktop.call("PATCH", `/api/videos/${video.id}`, { title: "from a stolen token" });
+await expectStatus(r, 403, "device token can't edit videos");
+r = await desktop.call("POST", "/api/auth/password", { current: "password1", next: "hijacked1" });
+await expectStatus(r, 403, "device token can't change the password");
+r = await desktop.call("GET", "/api/devices");
+await expectStatus(r, 403, "device token can't list or revoke devices");
+r = await desktop.call("GET", "/api/workspace/members");
+await expectStatus(r, 403, "device token can't manage members");
+{
+  const me = (await owner.call("GET", "/api/me")).json.user.id;
+  r = await owner.call("POST", `/api/workspace/members/${me}/reset`);
+  await expectStatus(r, 400, "no reset link for yourself (stolen sessions can't take the account over)");
+}
 r = await owner.call("POST", "/api/auth/password", { current: "nope", next: "password2" });
 await expectStatus(r, 400, "wrong current password");
 r = await owner.call("POST", "/api/auth/password", { current: "password1", next: "password2" });
 await expectStatus(r, 200, "password changed");
 r = await owner.call("GET", "/api/me");
 await expectStatus(r, 200, "still signed in after change");
+r = await desktop.call("GET", "/api/me");
+await expectStatus(r, 401, "changing the password disconnects the desktop apps");
 const ownerId = (await owner.call("GET", "/api/workspace/members")).json.members.find((m) => m.role === "owner").id;
 r = await member.call("POST", `/api/workspace/members/${ownerId}/reset`);
 await expectStatus(r, 403, "member can't reset the owner's password");
@@ -600,11 +727,15 @@ await expectStatus(r, 404, "deleted video is gone");
   ok("video ownership passed to the admin");
   await owner.call("DELETE", `/api/videos/${created.json.id}`);
 }
-r = await owner.call("GET", "/api/devices");
-const deviceId = r.json.devices[0].id;
-r = await owner.call("DELETE", `/api/devices/${deviceId}`);
-r = await desktop.call("GET", "/api/me");
-await expectStatus(r, 401, "revoked device token stops working");
+{
+  const fresh = client();
+  fresh.setBearer((await owner.call("POST", "/api/desktop/connect", { deviceName: "Second Mac" })).json.token);
+  await expectStatus(await fresh.call("GET", "/api/me"), 200, "new device connected");
+  r = await owner.call("GET", "/api/devices");
+  r = await owner.call("DELETE", `/api/devices/${r.json.devices.find((d) => d.name === "Second Mac").id}`);
+  r = await fresh.call("GET", "/api/me");
+  await expectStatus(r, 401, "revoked device token stops working");
+}
 r = await owner.call("POST", "/api/auth/logout");
 r = await owner.call("GET", "/api/me");
 await expectStatus(r, 401, "logout");

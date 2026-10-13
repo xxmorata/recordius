@@ -1,11 +1,30 @@
 import { sql } from "./db";
 import { createHmac } from "node:crypto";
-import { isIP } from "node:net";
 import { cookies } from "next/headers";
-import { customThumbPath, deleteFile, deletePrefix, downloadUrl, putPrivate, thumbPath, uploadTokens, videoPath, viewUrl } from "./blob";
-import { HttpError, type CurrentUser } from "./auth";
+import {
+  customThumbPath,
+  deleteFile,
+  deletePrefix,
+  downloadUrl,
+  fileExists,
+  fileSize,
+  finishMultipart,
+  MAX_VIDEO_BYTES,
+  PART_SIZE,
+  partUrl,
+  putPrivate,
+  singlePutUrl,
+  startMultipart,
+  storageProvider,
+  thumbPath,
+  uploadGrant,
+  videoPath,
+  viewUrl,
+} from "./blob";
+import { HttpError, canManageWorkspace, type CurrentUser } from "./auth";
 import { VIDEO_ID_RE, hashPassword, isEmail, newVideoId, normalizeEmail, randomToken, verifyPassword } from "./ids";
-import { authSecret } from "./env";
+import { authSecret, secureCookies } from "./env";
+import { ipBucket } from "./client-ip";
 
 import { PRIVACY_LABELS, type Comment, type Access, type LibraryScope, type Privacy, type Video, type VideoSource, type VideoStatus, type ViewerStats } from "./types";
 export { PRIVACY_LABELS };
@@ -50,7 +69,11 @@ const VIDEO_SELECT = `
   select v.*, u.name as owner_name, u.email as owner_email, u.avatar_path as owner_avatar
   from videos v join users u on u.id = v.owner_id`;
 
-async function toVideo(row: VideoRow, withUrls: boolean, canDownloadFull = true): Promise<Video> {
+/**
+ * @param canDownloadFull  the owner/admins: a download link even when a trim hides parts in the player
+ * @param inWorkspace      people with account-level access see the owner's email; link viewers only the name
+ */
+async function toVideo(row: VideoRow, withUrls: boolean, { canDownloadFull, inWorkspace }: { canDownloadFull: boolean; inWorkspace: boolean }): Promise<Video> {
   const ready = row.status === "ready";
   const [videoUrl, thumbUrl, avatarUrl] = await Promise.all([
     withUrls && ready ? viewUrl(videoPath(row.id, row.secret, row.ext)) : null,
@@ -72,10 +95,10 @@ async function toVideo(row: VideoRow, withUrls: boolean, canDownloadFull = true)
     views: row.views,
     createdAt: new Date(row.created_at).getTime(),
     archived: row.archived_at !== null,
-    owner: { id: row.owner_id, name: row.owner_name, email: row.owner_email, avatarUrl },
+    owner: { id: row.owner_id, name: row.owner_name, email: inWorkspace ? row.owner_email : "", avatarUrl },
     videoUrl,
     // A trim hides parts in the player; don't hand viewers a one-click download of the uncut file.
-    downloadUrl: videoUrl && (canDownloadFull || !trimOf(row)) ? downloadUrl(videoUrl) : null,
+    downloadUrl: videoUrl && (canDownloadFull || !trimOf(row)) ? await downloadUrl(videoPath(row.id, row.secret, row.ext), downloadName(row.title, row.ext)) : null,
     thumbUrl,
   };
 }
@@ -104,7 +127,10 @@ export async function accessFor(row: VideoRow, user: CurrentUser | null): Promis
   }
   if (row.privacy === "workspace") return member ? "member" : null;
   if (user) {
-    const rows = await sql()`select 1 from video_access where video_id = ${row.id} and email = ${user.email}`;
+    // Emails aren't verified, so a share only counts for an account that already existed when the video
+    // was shared — registering someone else's address later doesn't unlock their videos.
+    const rows = await sql()`select 1 from video_access a join users u on u.email = a.email
+      where a.video_id = ${row.id} and a.email = ${user.email} and a.created_at >= u.created_at`;
     if (rows.length) return "invited";
   }
   return null;
@@ -125,36 +151,6 @@ const ATTEMPT_WINDOW = "15 minutes";
 const MAX_ATTEMPTS_PER_CLIENT = 8;
 const MAX_ATTEMPTS_PER_VIDEO = 60; // for clients that already failed here
 const HARD_CAP_PER_VIDEO = 300; // for everyone: rotating IPs can't keep guessing forever
-
-/**
- * Rate-limit key for an address. IPv4-mapped IPv6 (::ffff:1.2.3.4) counts as the IPv4 address; other
- * IPv6 clients usually control a whole /64, so they're limited per /64. Anything unparsable is used as-is.
- */
-export function ipBucket(raw: string): string {
-  let ip = raw.trim();
-  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(ip); // [::1]:443
-  if (bracketed) ip = bracketed[1];
-  else if (/^[\d.]+:\d+$/.test(ip)) ip = ip.slice(0, ip.lastIndexOf(":")); // 1.2.3.4:443
-  ip = ip.split("%")[0];
-  if (isIP(ip) === 4) return ip;
-  if (isIP(ip) !== 6) return raw;
-  // Expand to eight 16-bit groups (an embedded dotted quad becomes the last two).
-  let text = ip.toLowerCase();
-  const quad = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
-  if (quad) {
-    const [a, b, c, d] = quad[1].split(".").map(Number);
-    text = text.slice(0, -quad[1].length) + `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
-  }
-  const [head, tail] = text.split("::");
-  const left = head ? head.split(":") : [];
-  const right = tail ? tail.split(":") : [];
-  const groups = [...left, ...Array(8 - left.length - right.length).fill("0"), ...right].map((g) => parseInt(g, 16));
-  // ::ffff:a.b.c.d (IPv4-mapped) and ::a.b.c.d (IPv4-compatible) are the IPv4 address.
-  if (groups.slice(0, 5).every((g) => g === 0) && (groups[5] === 0xffff || (groups[5] === 0 && groups[6] !== 0))) {
-    return [groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255].join(".");
-  }
-  return `${groups.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
-}
 
 export async function unlockVideo(id: string, password: string, clientIp: string) {
   const row = await rowById(id);
@@ -186,9 +182,9 @@ export async function unlockVideo(id: string, password: string, clientIp: string
   await db`delete from unlock_attempts where id = ${attempt.id}`;
   (await cookies()).set(unlockCookie(id), unlockValue(row), {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    // "none" so the unlock also works inside embeds on other sites (needs https, which production has).
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: secureCookies(),
+    // "none" so the unlock also works inside embeds on other sites (browsers allow that only over https).
+    sameSite: secureCookies() ? "none" : "lax",
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
@@ -204,7 +200,7 @@ export async function getVideoFor(id: string, user: CurrentUser | null): Promise
   if (!row) throw new HttpError(404, "This video doesn't exist");
   const access = await accessFor(row, user);
   if (!access) throw new HttpError(user ? 403 : 401, user ? "You don't have access to this video" : "Sign in to watch this video");
-  return { video: await toVideo(row, true, access === "owner"), access };
+  return { video: await toVideo(row, true, { canDownloadFull: access === "owner", inWorkspace: access !== "link" }), access };
 }
 
 export async function videoExists(id: string): Promise<boolean> {
@@ -228,7 +224,7 @@ export async function listVideos(user: CurrentUser, scope: LibraryScope, query =
     params.push(user.email);
     where = `v.workspace_id = $1 and v.archived_at is null and (
       v.privacy = 'workspace'
-      or exists (select 1 from video_access a where a.video_id = v.id and a.email = $2)
+      or exists (select 1 from video_access a join users iu on iu.email = a.email where a.video_id = v.id and a.email = $2 and a.created_at >= iu.created_at)
     )`;
   }
   if (q) {
@@ -236,7 +232,7 @@ export async function listVideos(user: CurrentUser, scope: LibraryScope, query =
     where += ` and v.title ilike $${params.length}`;
   }
   const rows = await sql().unsafe<VideoRow[]>(`${VIDEO_SELECT} where ${where} order by v.created_at desc limit ${Math.max(1, Math.min(500, Math.floor(limit) || 500))}`, params);
-  return Promise.all(rows.map((r) => toVideo(r, true)));
+  return Promise.all(rows.map((r) => toVideo(r, true, { canDownloadFull: r.owner_id === user.id || canManageWorkspace(user), inWorkspace: true })));
 }
 
 export async function countVideos(user: CurrentUser): Promise<{ mine: number; workspace: number; archive: number }> {
@@ -244,7 +240,8 @@ export async function countVideos(user: CurrentUser): Promise<{ mine: number; wo
     select
       count(*) filter (where owner_id = ${user.id} and archived_at is null) as mine,
       count(*) filter (where archived_at is null and (privacy = 'workspace'
-        or exists (select 1 from video_access a where a.video_id = videos.id and a.email = ${user.email}))) as workspace,
+        or exists (select 1 from video_access a join users iu on iu.email = a.email
+          where a.video_id = videos.id and a.email = ${user.email} and a.created_at >= iu.created_at))) as workspace,
       count(*) filter (where owner_id = ${user.id} and archived_at is not null) as archive
     from videos where workspace_id = ${user.workspace.id}`;
   return { mine: Number(row.mine), workspace: Number(row.workspace), archive: Number(row.archive) };
@@ -257,20 +254,89 @@ export async function createVideo(user: CurrentUser, title: string, mimeType: st
   const ext = mimeType.startsWith("video/webm") ? "webm" : "mp4";
   await sql()`insert into videos (id, workspace_id, owner_id, title, privacy, secret, mime_type, ext, source)
     values (${id}, ${user.workspace.id}, ${user.id}, ${title}, ${user.workspace.defaultPrivacy}, ${secret}, ${mimeType}, ${ext}, ${source})`;
-  const upload = await uploadTokens(id, secret, ext);
+  const upload = await uploadGrant(id, secret, ext);
   return { id, title, privacy: user.workspace.defaultPrivacy, upload };
 }
 
 export async function completeVideo(id: string, user: CurrentUser, durationMs: number, size: number) {
   const row = await requireOwned(id, user);
+  // Never mark a video ready whose file isn't there: the share page would show a broken player.
+  if (!(await fileExists(videoPath(row.id, row.secret, row.ext)))) throw new HttpError(409, "The video file hasn't finished uploading yet", "file_missing");
   const hasThumb = await thumbExists(row);
   await sql()`update videos set status = 'ready', duration_ms = ${Math.round(durationMs)}, size_bytes = ${Math.round(size)},
     has_thumb = ${hasThumb}, completed_at = now() where id = ${id}`;
 }
 
 async function thumbExists(row: VideoRow): Promise<boolean> {
-  const { fileExists } = await import("./blob");
   return fileExists(thumbPath(row.id, row.secret));
+}
+
+/** "Weekly sync.mp4" — a safe file name for downloads. */
+function downloadName(title: string, ext: string): string {
+  const base = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || "Recordius video";
+  return `${base}.${ext}`;
+}
+
+// ───────── uploads through Recordius (s3 / local storage) ─────────
+
+type UploadOp =
+  | { op: "create"; file: "video" | "thumb" }
+  | { op: "parts"; file: "video" | "thumb"; uploadId: string; partNumbers: number[] }
+  | { op: "complete"; file: "video" | "thumb"; uploadId: string; parts: { partNumber: number; etag: string }[] }
+  | { op: "put"; file: "thumb" };
+
+/**
+ * Hands out signed URLs to upload one video's own two files, to the person who recorded it, while it isn't
+ * finished. With Vercel Blob the client tokens in the upload grant do this job instead.
+ */
+export async function handleUpload(id: string, user: CurrentUser, raw: unknown) {
+  const provider = storageProvider();
+  if (provider === "vercel-blob") throw new HttpError(400, "This server uploads straight to Vercel Blob — use the tokens from the upload grant");
+  const row = await rowById(id);
+  if (!row) throw new HttpError(404, "This video doesn't exist", "video_gone");
+  if (row.owner_id !== user.id) throw new HttpError(403, "Only the person who recorded this video can upload it", "not_recorder");
+  const body = (raw ?? {}) as Partial<UploadOp> & Record<string, unknown>;
+  const file = body.file === "thumb" ? "thumb" : body.file === "video" ? "video" : null;
+  if (!file) throw new HttpError(400, "file must be video or thumb");
+  if (file === "video" && row.status === "ready") throw new HttpError(409, "This video has already finished uploading", "already_uploaded");
+  const pathname = file === "video" ? videoPath(row.id, row.secret, row.ext) : thumbPath(row.id, row.secret);
+  const contentType = file === "video" ? (row.ext === "webm" ? "video/webm" : "video/mp4") : "image/jpeg";
+  const uploadId = typeof body.uploadId === "string" ? body.uploadId : "";
+  switch (body.op) {
+    case "create":
+      return { uploadId: await startMultipart(pathname, contentType) };
+    case "parts": {
+      const nums = Array.isArray(body.partNumbers) ? body.partNumbers : [];
+      const maxParts = Math.ceil(MAX_VIDEO_BYTES / PART_SIZE); // 20 GB in 8 MB parts
+      if (!uploadId || !nums.length || nums.length > 100 || !nums.every((n) => Number.isInteger(n) && n >= 1 && n <= maxParts)) {
+        throw new HttpError(400, `Ask for 1–100 part numbers between 1 and ${maxParts} (videos can be up to 20 GB)`);
+      }
+      const urls = await Promise.all(nums.map((n) => partUrl(pathname, uploadId, n as number)));
+      return { urls: Object.fromEntries(nums.map((n, i) => [String(n), urls[i]])) };
+    }
+    case "complete": {
+      const parts = Array.isArray(body.parts) ? body.parts : [];
+      if (!uploadId || !parts.length || parts.length > 10_000 || !parts.every((p) => p && Number.isInteger(p.partNumber) && typeof p.etag === "string" && p.etag.length < 200)) {
+        throw new HttpError(400, "Send the uploaded parts as [{ partNumber, etag }]");
+      }
+      try {
+        await finishMultipart(pathname, uploadId, parts as { partNumber: number; etag: string }[]);
+      } catch (err) {
+        throw new HttpError(400, `The upload couldn't be finished: ${(err as Error).message}`);
+      }
+      // Signed part URLs can't cap their own size, so check the assembled file.
+      if (((await fileSize(pathname)) ?? 0) > (file === "video" ? MAX_VIDEO_BYTES : 5 * 1024 ** 2)) {
+        await deleteFile(pathname).catch(() => {});
+        throw new HttpError(413, file === "video" ? "Videos can be up to 20 GB" : "Thumbnails can be up to 5 MB");
+      }
+      return { ok: true };
+    }
+    case "put":
+      if (file !== "thumb") throw new HttpError(400, "Videos are uploaded in parts");
+      return { url: await singlePutUrl(pathname, contentType), contentType };
+    default:
+      throw new HttpError(400, "op must be create, parts, complete or put");
+  }
 }
 
 /** Replaces the thumbnail with an image the owner picked (e.g. the current frame of the player). */
@@ -285,7 +351,14 @@ export async function setCustomThumbnail(id: string, user: CurrentUser, jpeg: Bu
 }
 
 export async function markThumbnail(id: string, user: CurrentUser) {
-  await requireOwned(id, user);
+  const row = await requireOwned(id, user);
+  const pathname = thumbPath(row.id, row.secret);
+  const size = await fileSize(pathname);
+  if (size === null) throw new HttpError(409, "Upload the thumbnail first");
+  if (size > 5 * 1024 ** 2) {
+    await deleteFile(pathname).catch(() => {});
+    throw new HttpError(413, "Thumbnails can be up to 5 MB");
+  }
   await sql()`update videos set has_thumb = true where id = ${id}`;
 }
 
@@ -365,6 +438,14 @@ export async function grantAccess(id: string, user: CurrentUser, email: string) 
   await requireOwned(id, user);
   const normalized = normalizeEmail(email);
   if (!isEmail(normalized)) throw new HttpError(400, "That doesn't look like an email address");
+  const account = await sql()`select 1 from users where email = ${normalized}`;
+  if (!account[0]) {
+    throw new HttpError(
+      404,
+      "Nobody with this email has an account here yet. Invite them to your workspace first (Settings → Members), or share the link with a password instead.",
+      "no_account",
+    );
+  }
   await sql()`insert into video_access (video_id, email) values (${id}, ${normalized}) on conflict do nothing`;
   return normalized;
 }
@@ -403,7 +484,7 @@ export async function viewerStats(id: string, user: CurrentUser): Promise<Viewer
     select v.max_position_ms, v.last_seen_at, u.name, u.email, u.avatar_path,
       (u.id is not null and (
         exists (select 1 from memberships m where m.user_id = u.id and m.workspace_id = ${row.workspace_id})
-        or exists (select 1 from video_access a where a.video_id = v.video_id and a.email = u.email)
+        or exists (select 1 from video_access a where a.video_id = v.video_id and a.email = u.email and a.created_at >= u.created_at)
       )) as known
     from video_views v left join users u on u.id = v.user_id
     where v.video_id = ${id} order by v.last_seen_at desc limit 500`;
@@ -436,7 +517,7 @@ export async function reissueUploadTokens(id: string, user: CurrentUser) {
   const row = await requireOwned(id, user);
   if (row.owner_id !== user.id) throw new HttpError(403, "Only the person who recorded this video can upload it", "not_recorder");
   if (row.status === "ready") throw new HttpError(409, "This video has already finished uploading", "already_uploaded");
-  return uploadTokens(row.id, row.secret, row.ext);
+  return uploadGrant(row.id, row.secret, row.ext);
 }
 
 // ───────── public metadata for link previews / oEmbed ─────────

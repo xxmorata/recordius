@@ -18,6 +18,7 @@
     "@vercel/blob": "^2.8.1"
   },
   "devDependencies": {
+    "@electron/fuses": "^1.8.0",
     "@electron/packager": "^20.3.0",
     "electron": "^44.7.0"
   }

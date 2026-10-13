@@ -1,3 +1,4 @@
+import { secureCookies } from "./env";
 import { cookies, headers } from "next/headers";
 import { cache } from "react";
 import { sql } from "./db";
@@ -77,20 +78,36 @@ async function userForDeviceToken(token: string): Promise<CurrentUser | null> {
   return toUser(rows[0], "device");
 }
 
-/** Current user from the session cookie or a desktop bearer token; cached per request. */
-export const currentUser = cache(async (): Promise<CurrentUser | null> => {
+const resolveUser = cache(async (allowDevice: boolean): Promise<CurrentUser | null> => {
   const h = await headers();
   const auth = h.get("authorization");
-  if (auth?.startsWith("Bearer ")) return userForDeviceToken(auth.slice(7).trim());
+  if (auth?.startsWith("Bearer ")) return allowDevice ? userForDeviceToken(auth.slice(7).trim()) : null;
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!token) return null;
   return userForSession(token);
 });
 
-export async function requireUser(): Promise<CurrentUser> {
-  const user = await currentUser();
-  if (!user) throw new HttpError(401, "Sign in to continue");
-  return user;
+type AuthOptions = {
+  /**
+   * Accept the desktop app's device token too. Only the handful of endpoints the recorder needs do:
+   * a token copied off a Mac can create and upload recordings, but can't change passwords, members,
+   * devices or settings.
+   */
+  device?: boolean;
+};
+
+/** Current user from the session cookie (or, with `device`, a desktop bearer token); cached per request. */
+export function currentUser(opts: AuthOptions = {}): Promise<CurrentUser | null> {
+  return resolveUser(Boolean(opts.device));
+}
+
+export async function requireUser(opts: AuthOptions = {}): Promise<CurrentUser> {
+  const user = await currentUser(opts);
+  if (user) return user;
+  if (!opts.device && (await headers()).get("authorization")?.startsWith("Bearer ")) {
+    throw new HttpError(403, "The desktop app can't do this — sign in on the web instead");
+  }
+  throw new HttpError(401, "Sign in to continue");
 }
 
 export function canManageWorkspace(user: CurrentUser): boolean {
@@ -107,7 +124,7 @@ export async function createSession(userId: string, userAgent: string | null): P
 export async function setSessionCookie(token: string) {
   (await cookies()).set(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookies(),
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 24 * SESSION_DAYS,
@@ -149,10 +166,32 @@ export function errorResponse(err: unknown): Response {
   return Response.json({ error: "Something went wrong" }, { status: 500 });
 }
 
-/** Wraps a route handler so thrown HttpErrors become JSON responses. */
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Browsers send Origin with every POST/PATCH/DELETE. A request from another site's page is refused, so no
+ * page elsewhere can sign someone in, change their videos or post in their name (CSRF). The desktop app
+ * and scripts send no Origin and authenticate with a bearer token instead.
+ */
+function crossSite(req: Request): boolean {
+  if (!UNSAFE_METHODS.has(req.method)) return false;
+  const origin = req.headers.get("origin");
+  if (!origin) return false;
+  if (origin === "null") return true;
+  const host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "").split(",")[0].trim();
+  try {
+    return new URL(origin).host !== host;
+  } catch {
+    return true;
+  }
+}
+
+/** Wraps a route handler: refuses cross-site requests and turns thrown HttpErrors into JSON responses. */
 export function route<T extends unknown[]>(fn: (...args: T) => Promise<Response>) {
   return async (...args: T): Promise<Response> => {
     try {
+      const req = args[0];
+      if (req instanceof Request && crossSite(req)) throw new HttpError(403, "Requests from other sites aren't allowed");
       return await fn(...args);
     } catch (err) {
       return errorResponse(err);
@@ -161,6 +200,8 @@ export function route<T extends unknown[]>(fn: (...args: T) => Promise<Response>
 }
 
 export async function readJson<T = Record<string, unknown>>(req: Request): Promise<T> {
+  // Only real JSON requests: an HTML form on another site can't send this content type.
+  if (!/^application\/json\b/i.test(req.headers.get("content-type") ?? "")) throw new HttpError(415, "Send the request body as JSON");
   try {
     return (await req.json()) as T;
   } catch {

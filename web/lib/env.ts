@@ -14,6 +14,14 @@ export function appUrl(req?: Request): string {
   return "http://localhost:3000";
 }
 
+/**
+ * Cookies are marked Secure whenever the site is served over https (always in a real deployment).
+ * On a plain-http trial (http://localhost, a LAN address) they can't be, or browsers would drop them.
+ */
+export function secureCookies(): boolean {
+  return appUrl().startsWith("https://");
+}
+
 export function openSignupAllowed(): boolean {
   return /^(1|true|yes)$/i.test(process.env.ALLOW_OPEN_SIGNUP ?? "");
 }

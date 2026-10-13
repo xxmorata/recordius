@@ -37,6 +37,30 @@ if (!signedIn) {
 }
 const { token } = await call("POST", "/api/desktop/connect", { deviceName: "Seed script" });
 
+/** Uploads the video and its poster with whatever storage the server uses (vercel-blob, s3 or local). */
+async function uploadFiles(created, video, jpeg, bearer) {
+  const g = created.upload;
+  if (g.provider === "vercel-blob") {
+    await put(g.videoPathname, video, { access: "private", token: g.videoToken, contentType: "video/mp4", multipart: true });
+    await put(g.thumbPathname, jpeg, { access: "private", token: g.thumbToken, contentType: "image/jpeg" });
+    return;
+  }
+  const up = (body) => call("POST", `/api/videos/${created.id}/upload`, body, bearer);
+  const { uploadId } = await up({ op: "create", file: "video" });
+  const count = Math.max(1, Math.ceil(video.length / g.partSize));
+  const { urls } = await up({ op: "parts", file: "video", uploadId, partNumbers: Array.from({ length: count }, (_, i) => i + 1) });
+  const parts = [];
+  for (let i = 0; i < count; i++) {
+    const res = await fetch(urls[i + 1], { method: "PUT", body: video.subarray(i * g.partSize, (i + 1) * g.partSize) });
+    if (!res.ok) throw new Error(`part ${i + 1} → ${res.status}`);
+    parts.push({ partNumber: i + 1, etag: res.headers.get("etag") });
+  }
+  await up({ op: "complete", file: "video", uploadId, parts });
+  const thumb = await up({ op: "put", file: "thumb" });
+  const res = await fetch(thumb.url, { method: "PUT", body: jpeg, headers: { "content-type": thumb.contentType } });
+  if (!res.ok) throw new Error(`thumbnail → ${res.status}`);
+}
+
 const dir = mkdtempSync(join(tmpdir(), "rcd-seed-"));
 const VIDEOS = [
   { title: "Onboarding flow walkthrough — v3", seconds: 14, color: "0x625df5" },
@@ -55,9 +79,7 @@ for (const [i, v] of VIDEOS.entries()) {
   ]);
   execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", "1", "-i", mp4, "-frames:v", "1", "-q:v", "3", jpg]);
   const created = await call("POST", "/api/videos", { title: v.title, mimeType: "video/mp4" }, token);
-  const { videoPathname, videoToken, thumbPathname, thumbToken } = created.upload;
-  await put(videoPathname, readFileSync(mp4), { access: "private", token: videoToken, contentType: "video/mp4", multipart: true });
-  await put(thumbPathname, readFileSync(jpg), { access: "private", token: thumbToken, contentType: "image/jpeg" });
+  await uploadFiles(created, readFileSync(mp4), readFileSync(jpg), token);
   await call("POST", `/api/videos/${created.id}/thumbnail`, undefined, token);
   await call("POST", `/api/videos/${created.id}/complete`, { durationMs: v.seconds * 1000, size: readFileSync(mp4).length }, token);
   if (i === 1) await call("PATCH", `/api/videos/${created.id}`, { privacy: "workspace" });

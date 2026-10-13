@@ -7,7 +7,7 @@ import { markThumbnail, setCustomThumbnail } from "@/lib/videos";
  */
 export const POST = route(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
-  const user = await requireUser();
+  const user = await requireUser({ device: true });
   if (!(req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
     await markThumbnail(id, user);
     return Response.json({ ok: true });

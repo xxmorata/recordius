@@ -18,7 +18,10 @@ export function ConnectButton() {
       const deviceName = `${navigator.platform.includes("Mac") ? "Mac" : "Computer"} · ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
       const r = await api<{ deepLink: string; server: string; token: string }>("/api/desktop/connect", { method: "POST", json: { deviceName } });
       setLink(r);
-      window.location.href = r.deepLink;
+      // The Mac app opened this page with a one-time code; handing it back tells the app this connect
+      // was started by the user and not by some other website.
+      const state = new URLSearchParams(window.location.search).get("connect");
+      window.location.href = state && /^[a-f0-9]{32}$/.test(state) ? `${r.deepLink}&state=${state}` : r.deepLink;
     } catch (err) {
       toast((err as Error).message, "error");
     } finally {

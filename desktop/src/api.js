@@ -39,6 +39,8 @@ module.exports = {
   deleteVideo: (id) => call("DELETE", `/api/videos/${id}`),
   /** Fresh upload tokens to retry an unfinished upload (code "video_gone": deleted, "already_uploaded": done). */
   uploadToken: (id) => call("POST", `/api/videos/${id}/upload-token`),
+  /** Signed upload URLs for servers that store files in S3-compatible or local storage. */
+  upload: (id, body) => call("POST", `/api/videos/${id}/upload`, body),
   recent: (limit = 4) => call("GET", `/api/videos?scope=mine&limit=${limit}`),
   serverUrl: () => config.load().server?.replace(/\/$/, "") ?? null,
 };

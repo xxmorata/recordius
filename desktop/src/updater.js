@@ -6,6 +6,9 @@ const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { app } = require("electron");
 const config = require("./config");
+const { verifyAppDir } = require("./verify");
+
+const SEMVER = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 
 function currentVersion() {
   try {
@@ -28,6 +31,7 @@ async function check(releasesUrl = process.env.RECORDIUS_UPDATE_URL || `https://
   if (!res.ok) throw new Error(`Update check failed (${res.status})`);
   const release = await res.json();
   const version = String(release.tag_name ?? "").replace(/^v/, "");
+  if (!SEMVER.test(version)) throw new Error("The latest release has an unexpected version number");
   const tarball = release.assets?.find((a) => /^recordius-app-.*\.tar\.gz$/.test(a.name));
   const sums = release.assets?.find((a) => a.name === "SHA256SUMS.txt");
   return {
@@ -46,6 +50,7 @@ async function check(releasesUrl = process.env.RECORDIUS_UPDATE_URL || `https://
 async function install(info, onProgress = () => {}) {
   if (!app.isPackaged) throw new Error("Updates only apply to the installed app");
   if (!info.tarballUrl || !info.sumsUrl) throw new Error("This release has no desktop update");
+  if (!SEMVER.test(String(info.latest))) throw new Error("Unexpected version number");
   const root = path.join(app.getPath("userData"), "app");
   const tmp = path.join(root, `download-${process.pid}`);
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -79,6 +84,13 @@ async function install(info, onProgress = () => {}) {
     fs.mkdirSync(dest, { recursive: true });
     execFileSync("/usr/bin/tar", ["-xzf", file, "-C", dest]);
     if (!fs.existsSync(path.join(dest, "src", "main.js"))) throw new Error("The update archive is incomplete");
+    // Signed by the release key: a tampered release (or GitHub asset) is refused. The launcher checks again on start.
+    try {
+      if (verifyAppDir(dest) !== info.latest) throw new Error("the update is for a different version");
+    } catch (err) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      throw new Error(`Refused the update: ${err.message}`);
+    }
     fs.writeFileSync(path.join(root, "current.json"), JSON.stringify({ dir: info.latest, version: info.latest, installedAt: Date.now() }));
     // keep only the newest two versions around
     for (const entry of fs.readdirSync(root)) {

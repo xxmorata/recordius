@@ -34,6 +34,11 @@ export default async function Setup() {
         <Field label="Password" hint="At least 8 characters.">
           <Input name="password" type="password" autoComplete="new-password" required minLength={8} />
         </Field>
+        {process.env.SETUP_TOKEN && (
+          <Field label="Setup token" hint="The SETUP_TOKEN value from your server settings.">
+            <Input name="setupToken" type="password" autoComplete="off" required />
+          </Field>
+        )}
       </AuthForm>
     </>
   );

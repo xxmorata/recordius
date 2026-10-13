@@ -10,6 +10,8 @@
 // The .app contains only the launcher; the app code is placed in Contents/Resources/app and can be
 // replaced by the in-app updater without changing the bundle's signature (keeps macOS permissions).
 import { packager } from "@electron/packager";
+import { flipFuses, FuseV1Options, FuseVersion } from "@electron/fuses";
+import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -40,9 +42,25 @@ execFileSync("npm", ["install", "--omit=dev", "--no-package-lock", "--no-bin-lin
 rmSync(path.join(appCode, "node_modules", ".bin"), { recursive: true, force: true });
 console.log(`app code staged (${walkSize(appCode)} MB)`);
 
+// Signed manifest of the app code, so the updater and the launcher can tell a genuine release from
+// files someone dropped into ~/Library/Application Support (see src/verify.js).
+//   RECORDIUS_UPDATE_SIGNING_KEY  PEM private key (CI secret UPDATE_SIGNING_KEY)
+//   or ~/.config/recordius/update-signing.pem
+const { writeManifest, signManifest } = createRequire(import.meta.url)("../src/verify.js");
+const signingKeyFile = path.join(homedir(), ".config", "recordius", "update-signing.pem");
+const signingKey = process.env.RECORDIUS_UPDATE_SIGNING_KEY || (existsSync(signingKeyFile) ? readFileSync(signingKeyFile, "utf8") : null);
+writeManifest(appCode, version);
+if (signingKey) {
+  signManifest(appCode, signingKey);
+  console.log("app code signed with the update key");
+} else {
+  console.warn("no update signing key: this build works, but its tarball can't be installed as an in-app update");
+}
+
 // 2. Launcher bundle with the app code as an extra resource.
 const launcher = path.join(stage, "launcher");
 cpSync(path.join(root, "launcher"), launcher, { recursive: true });
+cpSync(path.join(root, "src", "verify.js"), path.join(launcher, "verify.js")); // the launcher checks updates with it
 writeFileSync(path.join(launcher, "package.json"), JSON.stringify({ ...JSON.parse(readFileSync(path.join(launcher, "package.json"), "utf8")), version }, null, 2));
 
 const [appPath] = await packager({
@@ -69,6 +87,14 @@ const [appPath] = await packager({
   },
 });
 const bundle = path.join(appPath, "Recordius.app");
+// Electron fuses: no "run as plain Node", no NODE_OPTIONS and no --inspect — each of those would let any
+// local process run its own code with Recordius' macOS permissions.
+await flipFuses(bundle, {
+  version: FuseVersion.V1,
+  [FuseV1Options.RunAsNode]: false,
+  [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+  [FuseV1Options.EnableNodeCliInspectArguments]: false,
+});
 // Signing. macOS ties privacy permissions (Screen Recording, Camera, Mic) to the app's code-signing
 // requirement. With an ad-hoc signature that requirement is the hash of the build, so every build is
 // a "new app" that has to be allowed again. A certificate — even a self-signed one — gives a stable

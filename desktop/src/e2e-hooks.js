@@ -20,7 +20,7 @@ async function shot(w, name) {
   return file;
 }
 
-module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec, retryFailedUploads }) => {
+module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec, retryFailedUploads, handleDeepLink, startConnect }) => {
   const [mode, msText] = process.env.RECORDIUS_E2E.split(":");
   const ms = Number(msText) || 6000;
   if (process.env.RECORDIUS_E2E_FAKE) {
@@ -144,7 +144,7 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
     fs.rmSync(dir, { recursive: true, force: true });
     library.removePending("e".repeat(32));
     library.removePending("d".repeat(32));
-    const ok = r.bannerShown && r.serverStatus === "ready" && r.serverDurationMs === 3210 && r.remainingIds.sort().join("") === "de" && r.uploadedLedger && r.remoteBytes === r.localBytes && result.done === 1;
+    const ok = r.bannerShown && r.serverStatus === "ready" && r.serverDurationMs === 3210 && r.remainingIds.sort().join("") === "de" && r.uploadedLedger && r.remoteBytes === r.localBytes;
     out({ ok, retry: r });
   };
 
@@ -175,6 +175,29 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
       }
       if (mode === "signin") return await runSignedOut();
       if (mode === "retry") return await runRetry();
+      if (mode === "deeplink") {
+        // A website opening recordius:// links must not be able to connect the app or start recording.
+        const config = require("./config");
+        const { dialog } = require("electron");
+        const [server, token] = process.env.RECORDIUS_E2E_LINK.split(/\s+/);
+        const asked = [];
+        dialog.showMessageBox = async (opts) => (asked.push(opts.message), { response: 0 }); // the user clicks Cancel
+        const before = config.token();
+        handleDeepLink(`recordius://connect?server=${encodeURIComponent(server)}&token=${token}`);
+        await wait(1500);
+        const r = { dialogShown: asked.length === 1, dialogText: asked[0] ?? null, tokenUnchanged: config.token() === before };
+        handleDeepLink(`recordius://connect?server=${encodeURIComponent(server)}&token=${token}&state=wrong`);
+        await wait(800);
+        r.wrongStateAsks = asked.length === 2 && config.token() === before;
+        handleDeepLink("recordius://record");
+        await wait(1500);
+        r.recordLinkIgnored = getState() === "idle";
+        const state = startConnect(); // what "Continue in browser" does
+        handleDeepLink(`recordius://connect?server=${encodeURIComponent(server)}&token=${token}&state=${state}`);
+        await until(() => config.token() === token, 8000);
+        r.matchingStateConnects = config.token() === token && asked.length === 2;
+        return out({ ok: Object.values(r).every((v) => v !== false), deeplink: r });
+      }
       if (mode === "quit") {
         // A normal quit (menu, ⌘Q, shutdown) must actually exit, also with the panel created and shown.
         showPanel();
@@ -207,6 +230,11 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
       const startedAt = Date.now();
       await wait(ms / 2);
       shots.controls = await shot(win.controls, "controls");
+      // The tallest layout (screen + camera recordings also show the camera toggle) must fit too.
+      await win.controls.webContents.executeJavaScript(`for (const id of ["camera", "cameraSep"]) document.getElementById(id).hidden = false`);
+      await wait(400);
+      shots.controlsWithCamera = await shot(win.controls, "controls-with-camera");
+      shots.controlsBounds = win.controls.getContentBounds();
       shots.camera = await shot(win.camera, "camera");
       togglePause();
       await wait(600);

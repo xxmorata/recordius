@@ -17,6 +17,7 @@ window.recordius.on("controls:state", ({ state, elapsedMs }) => {
 async function refreshCamera() {
   const s = await window.recordius.invoke("controls:camera-state");
   $("camera").hidden = !s.hasCamera;
+  $("cameraSep").hidden = !s.hasCamera;
   $("camera").classList.toggle("off", !s.visible);
 }
 
@@ -29,3 +30,5 @@ $("camera").onclick = async () => {
   setTimeout(refreshCamera, 300);
 };
 refreshCamera();
+// The window is sized to the bar, so nothing is ever cut off (screen-only recordings have no camera button).
+new ResizeObserver(() => window.recordius.send("controls:size", Math.ceil($("bar").getBoundingClientRect().height))).observe($("bar"));

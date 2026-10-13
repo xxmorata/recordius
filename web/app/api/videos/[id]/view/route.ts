@@ -1,3 +1,4 @@
+import { secureCookies } from "@/lib/env";
 import { cookies } from "next/headers";
 import { currentUser, route } from "@/lib/auth";
 import { randomToken } from "@/lib/ids";
@@ -25,8 +26,8 @@ export const POST = route(async (req: Request, { params }: { params: Promise<{ i
       anonKey = randomToken(16);
       jar.set(ANON_COOKIE, anonKey, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        secure: secureCookies(),
+        sameSite: secureCookies() ? "none" : "lax",
         path: "/",
         maxAge: 60 * 60 * 24 * 365,
       });

@@ -138,7 +138,7 @@ export function ShareDialog({ video, shareUrl, open, onClose, onChange, canEdit 
                 ))}
                 {emails && emails.length === 0 && <li className="text-[13px] text-ink-4">Nobody yet — only you can watch.</li>}
               </ul>
-              <p className="mt-2 text-xs text-ink-4">Invited people sign in with that email (they need an account on this Recordius).</p>
+              <p className="mt-2 text-xs text-ink-4">Works for people who already have an account on this Recordius — for anyone else, use a password-protected link.</p>
             </div>
           )}
         </fieldset>

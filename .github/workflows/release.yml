@@ -46,6 +46,11 @@ jobs:
           echo "RECORDIUS_SIGN_KEYCHAIN=$KC" >> "$GITHUB_ENV"
       - run: node scripts/package.mjs --release --no-install
         working-directory: desktop
+        env:
+          # Ed25519 key that signs the app code; installed apps refuse in-app updates without a valid signature.
+          RECORDIUS_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+      - name: Check that the update payload is signed
+        run: tar -tzf desktop/dist/release/recordius-app-*.tar.gz | grep -qx './manifest.sig' || { echo "the in-app update isn't signed — set the UPDATE_SIGNING_KEY secret"; exit 1; }
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
