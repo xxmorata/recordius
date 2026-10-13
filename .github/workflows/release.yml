@@ -12,6 +12,8 @@ permissions:
 jobs:
   mac:
     runs-on: macos-14
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.MAC_SIGNING_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,7 +30,7 @@ jobs:
       - name: Import signing certificate
         # Optional. A self-signed certificate is enough: it keeps macOS privacy permissions stable
         # across updates (see docs/desktop.md). Without the secrets the build is ad-hoc signed.
-        if: ${{ secrets.MAC_SIGNING_P12 != '' }}
+        if: env.HAS_SIGNING_CERT == 'true'
         env:
           MAC_SIGNING_P12: ${{ secrets.MAC_SIGNING_P12 }}
           MAC_SIGNING_P12_PASSWORD: ${{ secrets.MAC_SIGNING_P12_PASSWORD }}
