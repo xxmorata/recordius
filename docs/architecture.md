@@ -40,7 +40,7 @@ Owners and admins can change privacy, rename, archive and delete; members can on
 ## Authentication
 
 - **Browser:** email + password (scrypt), a random session token stored hashed in `sessions`, 90-day httpOnly cookie.
-- **Desktop:** a device token (`rcd_…`) stored hashed in `device_tokens`, created by the browser session on `POST /api/desktop/connect` and handed over through the `recordius://connect?server=&token=` deep link (or pasted manually). The app keeps it encrypted with `safeStorage`. Tokens can be revoked under *Settings → Connected devices*; the app notices on its next request and shows the sign-in screen.
+- **Desktop:** a device token (`rcd_…`) stored hashed in `device_tokens`, created by the browser session on `POST /api/desktop/connect` and handed over through the `recordius://connect?server=&token=` deep link (or pasted manually). The app keeps it in a file only the user can read (`~/Library/Application Support/Recordius/device-token`, mode 0600 — the same approach as the gh/vercel/aws CLIs; Keychain-backed storage would make macOS ask for the login password because the app isn't notarized). Tokens can be revoked under *Settings → Connected devices*; the app notices on its next request and shows the sign-in screen.
 - **Invites:** random token, hashed in `invites`, optional expiry and max uses. **Password resets:** the same pattern, created by an admin.
 
 ## Desktop update model
