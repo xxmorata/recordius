@@ -122,6 +122,11 @@ module.exports = ({ startRecording, stopRecording, cancelRecording, togglePause,
     if ((await until(() => getState() === "recording", 30000)) === null) throw new Error(`recording did not start (state=${getState()})`);
     await wait(3000);
     await check("recording", false);
+    // The (hidden) panel re-rendering mid-recording must not take the camera bubble away.
+    await win.panel.webContents.executeJavaScript("render(); loadSources().catch(() => {})");
+    await wait(1500);
+    r.bubbleKeptWhileRecording = Boolean(win.camera && !win.camera.isDestroyed() && win.camera.isVisible());
+    r.steps.push({ step: "camera bubble stays while recording", tracks: {}, os: null, ok: r.bubbleKeptWhileRecording });
     await stopRecording();
     await settle();
     await check("after a recording", true);

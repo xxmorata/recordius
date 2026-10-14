@@ -929,7 +929,7 @@ ipcMain.on("panel:camera-preview", (_e, { enabled, cameraId }) => {
   // A preview request can arrive right after the panel was hidden; never let it resurrect the bubble.
   const panelShown = Boolean(win.panel && !win.panel.isDestroyed() && win.panel.isVisible()) && (panelShowStamp > panelHideStamp || Date.now() - panelHideStamp > 1500);
   if (enabled && panelShown && state === "idle") showCamera(cameraId);
-  else if (!enabled) hideCamera();
+  else if (!enabled && state === "idle") hideCamera(); // while recording the bubble belongs to the recording
 });
 ipcMain.on("panel:start", (_e, opts) => startRecording(opts));
 ipcMain.on("panel:settings", (_e, patch) => {
