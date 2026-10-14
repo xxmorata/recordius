@@ -87,6 +87,7 @@ Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubb
 - **"Connect Recordius to …?"** — the app shows this when a connect link didn't come from the app's own *Continue in browser* step (for example after you signed in again in between). Check that the address is your Recordius server, then click *Connect*. Never connect to an address you don't recognise.
 - **"Enter your workspace address" / can't connect** — the server must use `https://` (only `http://localhost` is allowed without it).
 - **"This Mac is no longer connected"** — the device was disconnected from the web app; connect it again from *Get the app*.
+- **A video shows a wrong length, or clicking the timeline doesn't jump (Firefox)** — a recording made with an app before 1.0.14. The server repairs it the first time it's opened; reload the page after a few seconds. The player says "being prepared" meanwhile. Update the app so new recordings don't need this.
 - **"Can't reach https://… — check your internet connection, VPN or proxy"** — the Mac couldn't connect to your server (or its storage). First open the same address in your browser:
   - it doesn't open either → the server is down or blocked on this network. Some countries and company networks block `*.vercel.app`; give the Vercel project your own domain, or self-host on your own server (see [self-hosting](self-hosting.md));
   - it opens in the browser → update the app (Settings → *Check for updates*). Since 1.0.13 the app uses the same network settings as the browser: system proxy, PAC and VPN apps.

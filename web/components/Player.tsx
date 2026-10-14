@@ -33,6 +33,11 @@ type Props = {
   markers?: PlayerMarker[];
   /** The recording's length as the server knows it (ms). Used when the file doesn't say (see fileLength). */
   knownDurationMs?: number | null;
+  /**
+   * Whether the file has a seek index (see lib/mp4-index). "pending": the server is adding one; the page
+   * swaps `src` for the repaired file when it's done and the player carries on where it was.
+   */
+  seekIndex?: "pending" | "ready" | "failed" | null;
   className?: string;
 };
 
@@ -64,7 +69,7 @@ const SHORTCUTS: Array<[string, string]> = [
  * Everything the viewer sees works on a "virtual" timeline that starts at the trim start and ends at the
  * trim end, so a trimmed video looks and behaves exactly like a shorter one.
  */
-export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, markers, knownDurationMs, className }, ref) {
+export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, markers, knownDurationMs, seekIndex, className }, ref) {
   const root = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -87,6 +92,19 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
   const [scrubbing, setScrubbing] = useState(false);
   const [pipAvailable, setPipAvailable] = useState(false);
   const [help, setHelp] = useState(false);
+  // The browser couldn't reach the time the viewer asked for (a recording without a seek index, see
+  // seekIndex): what we tell them, and where to go once the repaired file arrives.
+  const [unseekable, setUnseekable] = useState<string | null>(null);
+  const seekTarget = useRef<number | null>(null);
+  const pendingSeek = useRef<number | null>(null);
+  // Position to restore after `src` changes (expired URL refreshed, or the repaired file). The element
+  // resets to 0 the moment React sets the new src, so the last known position and state are tracked
+  // continuously instead of read at that point.
+  const resumeAt = useRef<{ time: number; playing: boolean } | null>(null);
+  const loadedSrc = useRef<string | null>(null);
+  const lastPos = useRef(0); // virtual seconds
+  const wasPlaying = useRef(false);
+  const reloads = useRef(0);
 
   const base = trim ? trim.startMs / 1000 : 0;
   const length = fileLength(fileDuration, knownDurationMs);
@@ -133,10 +151,51 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
     const { base, duration } = bounds.current;
     if (!v || !duration) return;
     const clamped = Math.min(Math.max(0, t), Math.max(0, duration - 0.05));
+    seekTarget.current = clamped;
+    lastPos.current = clamped;
     v.currentTime = base + clamped;
     setTime(clamped);
     setEnded(false);
+    setUnseekable(null);
   }, []);
+
+  /**
+   * After a seek: if the browser stopped far short of the target although the recording is longer, the
+   * file has no seek index for this browser (Firefox with recordings made before desktop 1.0.14).
+   */
+  const checkSeekLanded = useCallback(() => {
+    const v = video.current;
+    const target = seekTarget.current;
+    seekTarget.current = null;
+    if (!v || target == null) return;
+    const { base, duration } = bounds.current;
+    const landed = v.currentTime - base;
+    if (target <= v.duration - base + 1 || Math.abs(landed - target) < 1 || duration <= v.duration - base + 1) return;
+    pendingSeek.current = target;
+    setUnseekable(
+      seekIndex === "pending"
+        ? "This browser can't skip ahead in this recording yet — it's being prepared, a moment…"
+        : "This browser can't skip ahead in this recording. Try Chrome or Safari, or let it play.",
+    );
+  }, [seekIndex]);
+
+  // A new address for the same video (refreshed link, or the file repaired with a seek index): keep the
+  // viewer's place instead of starting over, and finish the jump they asked for if one is waiting.
+  // Captured during render, i.e. before the element gets the new src: on that change it resets to 0 and
+  // fires a last timeupdate, which an effect would see too late.
+  if (loadedSrc.current !== null && loadedSrc.current !== src && !resumeAt.current) {
+    resumeAt.current = { time: pendingSeek.current ?? lastPos.current, playing: wasPlaying.current };
+  }
+  useEffect(() => {
+    if (loadedSrc.current === src) return;
+    const first = loadedSrc.current === null;
+    loadedSrc.current = src;
+    if (first) return;
+    pendingSeek.current = null;
+    reloads.current = 0;
+    setUnseekable(null);
+    setWaiting(true); // until the new address plays (canplay / playing)
+  }, [src]);
 
   const toggle = useCallback(() => {
     const v = video.current;
@@ -171,9 +230,11 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
 
   function toggleFullscreen() {
     const el = root.current;
-    if (!el) return;
+    const v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+    if (!el || !v) return;
     if (document.fullscreenElement) document.exitFullscreen();
-    else el.requestFullscreen?.();
+    else if (el.requestFullscreen) el.requestFullscreen().catch(() => v.webkitEnterFullscreen?.());
+    else v.webkitEnterFullscreen?.(); // iPhone: only the video itself can go full screen
   }
 
   useEffect(() => {
@@ -243,22 +304,41 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
   }
 
   function startScrub(e: React.PointerEvent) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
     e.preventDefault();
     const v = video.current!;
-    const wasPlaying = !v.paused;
+    const el = bar.current!;
+    const wasPlaying = !v.paused && !v.ended;
     setScrubbing(true);
     seek(barTime(e.clientX));
-    const move = (ev: PointerEvent) => seek(barTime(ev.clientX));
-    const up = (ev: PointerEvent) => {
+    // Pointer capture: the drag keeps working outside the bar and even outside the window, and always ends.
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {}
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
       seek(barTime(ev.clientX));
-      setScrubbing(false);
-      if (wasPlaying) v.play().catch(() => {});
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+      setHover({ x: ev.clientX - el.getBoundingClientRect().left, t: barTime(ev.clientX) });
     };
+    const finish = (ev: PointerEvent, cancelled: boolean) => {
+      if (ev.pointerId !== e.pointerId) return;
+      if (!cancelled) seek(barTime(ev.clientX));
+      setScrubbing(false);
+      if (ev.pointerType !== "mouse") setHover(null);
+      if (wasPlaying) v.play().catch(() => {});
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", cancel);
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {}
+    };
+    const up = (ev: PointerEvent) => finish(ev, false);
+    const cancel = (ev: PointerEvent) => finish(ev, true);
     if (wasPlaying) v.pause();
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", cancel);
   }
 
   const progress = duration ? (time / duration) * 100 : 0;
@@ -288,24 +368,51 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
         onPlay={() => {
           setPlaying(true);
           setEnded(false);
+          wasPlaying.current = true;
           poke();
           if (!played.current) {
             played.current = true;
             onFirstPlay?.();
           }
         }}
-        onPause={() => setPlaying(false)}
+        onPause={() => {
+          setPlaying(false);
+          wasPlaying.current = false;
+        }}
         onEnded={() => {
           setEnded(true);
           setPlaying(false);
+          wasPlaying.current = false;
         }}
         onWaiting={() => setWaiting(true)}
         onPlaying={() => setWaiting(false)}
         onCanPlay={() => setWaiting(false)}
+        // A jump into a part that isn't downloaded yet takes a moment: show it (paused videos get no "waiting").
+        onSeeking={() => setWaiting(true)}
+        onSeeked={() => {
+          setWaiting(false);
+          checkSeekLanded();
+        }}
+        onError={(e) => {
+          setWaiting(false);
+          // A file that was swapped in a moment ago may not be served everywhere yet: try again shortly.
+          const v = e.currentTarget;
+          if (resumeAt.current && reloads.current < 4) {
+            reloads.current++;
+            setTimeout(() => v.load(), 2500);
+          }
+        }}
         onLoadedMetadata={(e) => {
           const v = e.currentTarget;
           setFileDuration(v.duration);
           v.playbackRate = speed;
+          const resume = resumeAt.current;
+          if (resume) {
+            resumeAt.current = null;
+            seek(resume.time);
+            if (resume.playing) v.play().catch(() => {});
+            return;
+          }
           if (startApplied.current) return;
           startApplied.current = true;
           const b = trim ? trim.startMs / 1000 : 0;
@@ -320,7 +427,8 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
         onDurationChange={(e) => setFileDuration(e.currentTarget.duration)}
         onTimeUpdate={(e) => {
           const t = Math.min(Math.max(0, e.currentTarget.currentTime - bounds.current.base), bounds.current.duration);
-          if (!scrubbing) setTime(t);
+          if (!resumeAt.current) lastPos.current = t;
+          if (!scrubbing && pendingSeek.current == null) setTime(t);
           onTime?.(t);
         }}
         onProgress={(e) => {
@@ -354,6 +462,15 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
         </button>
       )}
 
+      {unseekable && (
+        <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center px-3">
+          <p className="pointer-events-auto max-w-md rounded-lg bg-ink/90 px-3 py-2 text-center text-[13px] text-white shadow-[var(--shadow-pop)]">
+            {unseekable}
+            {seekIndex === "pending" && <Loader2 className="ml-2 inline size-3.5 animate-spin align-[-2px]" />}
+          </p>
+        </div>
+      )}
+
       {/* controls */}
       <div
         className={cx(
@@ -363,10 +480,10 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
       >
         <div
           ref={bar}
-          className="group/bar relative mb-1 flex h-5 cursor-pointer items-center"
+          className="group/bar relative mb-1 flex h-5 cursor-pointer touch-none items-center"
           onPointerDown={startScrub}
-          onPointerMove={(e) => duration && setHover({ x: e.clientX - bar.current!.getBoundingClientRect().left, t: barTime(e.clientX) })}
-          onPointerLeave={() => setHover(null)}
+          onPointerMove={(e) => duration && !scrubbing && setHover({ x: e.clientX - bar.current!.getBoundingClientRect().left, t: barTime(e.clientX) })}
+          onPointerLeave={() => !scrubbing && setHover(null)}
           role="slider"
           aria-label="Seek"
           aria-valuemin={0}

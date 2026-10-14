@@ -15,7 +15,6 @@ import { LinkGate } from "@/components/LinkGate";
 type Props = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
-
 // Metadata and page need the same video: load (and sign its URLs) once per request.
 const loadVideo = cache(async (id: string) => getVideoFor(id, await currentUser()));
 

@@ -220,6 +220,18 @@ Rate limiting (sign-in, link passwords) uses the right-most `X-Forwarded-For` en
 
 Database migrations run automatically when the new version starts and only add tables and columns, so an older instance keeps working during a rolling update. The **Mac app** updates itself (*Settings → Check for updates*); updates are signed and verified before they're installed.
 
+### Older recordings and seeking
+
+Recordings made with Mac apps before 1.0.14 have no total duration or seek index in the file, so Firefox showed a wrong length and couldn't jump ahead in them. Since the October 2026 release the server repairs such a file the first time someone opens the video (a few seconds for a typical recording; the page picks the repaired file up by itself). The original is kept for 7 hours, so a video briefly takes twice its space — on Vercel Blob's free tier (1 GB) that can matter.
+
+To repair every older recording of a workspace at once instead, a workspace owner or admin can run, from the `web` folder of a checkout:
+
+```bash
+BASE=https://videos.example.com node scripts/reindex.mjs
+```
+
+It asks for that person's email and password and calls `POST /api/videos/reindex` until nothing is left. Recordings from 1.0.14 and newer, browser uploads and WebM files are checked once and left as they are.
+
 ---
 
 ## Backups and moving hosts

@@ -54,4 +54,54 @@ export interface StorageDriver {
   completeMultipart?(pathname: string, uploadId: string, parts: UploadedPart[]): Promise<void>;
   /** Single signed PUT (thumbnails). The client must send the same Content-Type. */
   putUrl?(pathname: string, contentType: string, ttlMs: number): Promise<string>;
+  /** The file's bytes (or an inclusive byte range), streamed. Used server side to repair recordings. */
+  readStream(pathname: string, range?: { start: number; end: number }): Promise<ReadableStream<Uint8Array>>;
+  /** Writes a file of any size from a stream (multipart where the storage needs it). */
+  putStream(pathname: string, body: AsyncIterable<Uint8Array>, contentType: string): Promise<void>;
 }
+
+/**
+ * Cuts a byte stream into 8 MB parts (S3 wants ≥ 5 MB except for the last) and uploads them, three at a
+ * time: bounded memory, and far faster than one by one. Returns the parts in order.
+ */
+export async function uploadInParts(body: AsyncIterable<Uint8Array>, upload: (partNumber: number, part: Buffer) => Promise<UploadedPart>): Promise<UploadedPart[]> {
+  const PART = 8 * 1024 ** 2;
+  const PARALLEL = 3;
+  const results: UploadedPart[] = [];
+  const inflight = new Map<number, Promise<void>>();
+  let failed: unknown = null;
+  let pending: Buffer[] = [];
+  let pendingBytes = 0;
+  let next = 1;
+  const start = async (part: Buffer) => {
+    if (failed) throw failed;
+    const n = next++;
+    // Failures are recorded, never left as unhandled rejections, and thrown from the main flow below.
+    const p = upload(n, part).then(
+      (r) => {
+        results[n - 1] = r;
+      },
+      (err) => {
+        failed ??= err;
+      },
+    ).finally(() => inflight.delete(n));
+    inflight.set(n, p);
+    if (inflight.size >= PARALLEL) await Promise.race(inflight.values());
+    if (failed) throw failed;
+  };
+  for await (const chunk of body) {
+    pending.push(Buffer.from(chunk));
+    pendingBytes += chunk.length;
+    if (pendingBytes >= PART) {
+      const all = Buffer.concat(pending);
+      pending = all.length > PART ? [all.subarray(PART)] : [];
+      pendingBytes = pending.length ? pending[0].length : 0;
+      await start(all.subarray(0, PART));
+    }
+  }
+  if (pendingBytes || next === 1) await start(Buffer.concat(pending));
+  await Promise.all(inflight.values());
+  if (failed) throw failed;
+  return results;
+}
+

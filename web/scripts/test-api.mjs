@@ -757,6 +757,116 @@ await expectStatus(r, 200, "login with new password");
   await expectStatus(await ivyDesktop.call("GET", "/api/me"), 401, "password reset revokes desktop tokens");
 }
 
+section("seek index for older recordings (fragmented MP4 without duration/index)");
+{
+  // A fragmented MP4 shaped like Chromium's MediaRecorder output, built here (same shape as desktop/scripts/test-mp4-index.mjs).
+  const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
+  const u64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; };
+  const box = (type, ...parts) => { const body = Buffer.concat(parts); return Buffer.concat([u32(8 + body.length), Buffer.from(type, "latin1"), body]); };
+  const full = (type, version, flags, ...parts) => box(type, u32((version << 24) | flags), ...parts);
+  const TRACKS = [{ id: 1, timescale: 30000, sampleDuration: 1000 }, { id: 2, timescale: 48000, sampleDuration: 960 }];
+  const buildRecording = (fragments) => {
+    const ftyp = box("ftyp", Buffer.from("isom"), u32(0x200), Buffer.from("isomiso2avc1mp41"));
+    const traks = TRACKS.map((t) => box("trak", full("tkhd", 1, 3, u64(0), u64(0), u32(t.id), u32(0), u64(0), Buffer.alloc(60)), box("mdia", full("mdhd", 1, 0, u64(0), u64(0), u32(t.timescale), u64(t.sampleDuration * 9), u32(0)), box("hdlr", Buffer.alloc(25)))));
+    const moov = box("moov", full("mvhd", 1, 0, u64(0), u64(0), u32(1000), u64(0), Buffer.alloc(80)), ...traks, box("mvex", ...TRACKS.map((t) => full("trex", 0, 0, u32(t.id), u32(1), u32(0), u32(0), u32(0)))));
+    const out = [ftyp, moov];
+    for (let f = 0; f < fragments; f++) {
+      const trafs = TRACKS.map((t) => {
+        const count = t.id === 1 ? 90 : (90 / 30) * (48000 / 960);
+        const durations = Buffer.concat(Array.from({ length: count }, () => Buffer.concat([u32(t.sampleDuration), u32(100)])));
+        return box("traf", full("tfhd", 0, 0x20000, u32(t.id)), full("tfdt", 1, 0, u64(f * count * t.sampleDuration)), full("trun", 0, 0x301, u32(count), u32(0), durations));
+      });
+      out.push(box("moof", full("mfhd", 0, 0, u32(f + 1)), ...trafs), box("mdat", Buffer.alloc(20_000 + f, f)));
+    }
+    return Buffer.concat(out);
+  };
+  const topBoxes = (buf) => { const boxes = []; for (let off = 0; off < buf.length; ) { const size = buf.readUInt32BE(off); boxes.push({ off, size, type: buf.toString("latin1", off + 4, off + 8) }); off += size; } return boxes; };
+  // Up to 90 s: a just-uploaded file can take a few seconds to become readable (Vercel Blob), and the job waits for it.
+  const waitIndexed = async (id, c = desktop) => {
+    for (let i = 0; i < 180; i++) {
+      const g = await c.call("GET", `/api/videos/${id}`);
+      if (g.json.seekIndex !== "pending") return g.json;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error("the seek index was never added");
+  };
+  const download = async (url) => Buffer.from(await (await fetch(url)).arrayBuffer());
+  // The earlier device token was revoked by the password change above: connect a new Mac.
+  const desktop = client();
+  desktop.setBearer((await owner.call("POST", "/api/desktop/connect", { deviceName: "Seek-index Mac" })).json.token);
+
+  // 1. An older recording: uploaded as recorded (no index), repaired by the server after "complete".
+  const old = buildRecording(10); // 10 × 3 s
+  r = await desktop.call("POST", "/api/videos", { title: "Old-style recording", mimeType: "video/mp4" });
+  const oldVideo = r.json;
+  await uploadVideoParts(desktop, oldVideo, [old]);
+  r = await desktop.call("POST", `/api/videos/${oldVideo.id}/complete`, { durationMs: 30000, size: old.length });
+  await expectStatus(r, 200, "older recording completed");
+  r = await member.call("GET", `/api/videos/${oldVideo.id}`);
+  const firstUrl = r.json.videoUrl;
+  assert.ok(["pending", "ready"].includes(r.json.seekIndex), `seekIndex is ${r.json.seekIndex}`);
+  const fixed = await waitIndexed(oldVideo.id, member);
+  assert.equal(fixed.seekIndex, "ready", "repaired in the background");
+  const repaired = await download(fixed.videoUrl);
+  assert.equal(repaired.length, fixed.size, "the video's size follows the repaired file");
+  assert.equal(repaired.length, old.length + 20 + 8 + 2 * (24 + 10 * 19) + 16, "+ mehd (20 B) + mfra");
+  const boxes = topBoxes(repaired);
+  assert.deepEqual([...new Set(boxes.map((b) => b.type))], ["ftyp", "moov", "moof", "mdat", "mfra"]);
+  const moov = repaired.subarray(boxes[1].off, boxes[1].off + boxes[1].size);
+  assert.equal(Number(moov.readBigUInt64BE(moov.indexOf("mehd") + 8)), 30000, "mehd = 30 s");
+  assert.equal(Number(moov.readBigUInt64BE(moov.indexOf("mdhd") + 4 + 24)), 0, "track duration zeroed");
+  const mfra = boxes.at(-1);
+  assert.equal(repaired.readUInt32BE(repaired.length - 4), mfra.size, "mfro points back at mfra");
+  const moofs = boxes.filter((b) => b.type === "moof").map((b) => b.off);
+  for (let i = 0; i < 10; i++) assert.equal(Number(repaired.readBigUInt64BE(mfra.off + 8 + 24 + i * 19 + 8)), moofs[i], `tfra entry ${i} points at moof ${i}`);
+  assert.equal(repaired.subarray(boxes[2].off, mfra.off).compare(old.subarray(boxes[2].off - 20)), 0, "media data untouched");
+  ok("older recording gets a duration and a seek index in the background; the page sees the repaired file");
+  const stillThere = await fetch(firstUrl, { headers: { range: "bytes=0-7" } });
+  assert.ok([200, 206].includes(stillThere.status), `the original is kept for viewers who already have its link (${stillThere.status})`);
+  ok("the original file stays until links to it have expired");
+  const dl = await member.call("GET", `/api/videos/${oldVideo.id}/download`);
+  assert.ok([200, 302, 307].includes(dl.status), `download works after the repair (${dl.status})`);
+  await owner.call("DELETE", `/api/videos/${oldVideo.id}`);
+
+  // 2. Cut short by a crash: the half-written last fragment is dropped, the rest indexed.
+  const whole = buildRecording(6);
+  const cut = whole.subarray(0, whole.length - 5000);
+  r = await desktop.call("POST", "/api/videos", { title: "Crash-truncated recording", mimeType: "video/mp4" });
+  const cutVideo = r.json;
+  await uploadVideoParts(desktop, cutVideo, [cut]);
+  await desktop.call("POST", `/api/videos/${cutVideo.id}/complete`, { durationMs: 17000, size: cut.length });
+  const cutFixed = await waitIndexed(cutVideo.id);
+  assert.equal(cutFixed.seekIndex, "ready");
+  const cutRepaired = await download(cutFixed.videoUrl);
+  const cutBoxes = topBoxes(cutRepaired);
+  assert.equal(cutBoxes.filter((b) => b.type === "moof").length, 5, "5 whole fragments kept");
+  assert.equal(cutBoxes.at(-1).type, "mfra");
+  assert.ok(cutRepaired.length < cut.length, "the unplayable tail is gone");
+  ok("a recording cut short by a crash is repaired too");
+  await owner.call("DELETE", `/api/videos/${cutVideo.id}`);
+
+  // 3. A regular MP4 (browser upload) and a file that isn't an MP4 at all: left exactly as they are.
+  const plain = Buffer.concat([box("ftyp", Buffer.from("isom"), u32(0x200), Buffer.from("isomiso2avc1mp41")), box("moov", full("mvhd", 0, 0, u32(0), u32(0), u32(1000), u32(5000), Buffer.alloc(80))), box("mdat", Buffer.alloc(3000, 7))]);
+  r = await desktop.call("POST", "/api/videos", { title: "Plain MP4", mimeType: "video/mp4" });
+  const plainVideo = r.json;
+  await uploadVideoParts(desktop, plainVideo, [plain]);
+  await desktop.call("POST", `/api/videos/${plainVideo.id}/complete`, { durationMs: 5000, size: plain.length });
+  const plainFixed = await waitIndexed(plainVideo.id);
+  assert.equal(plainFixed.seekIndex, "ready");
+  assert.equal(plainFixed.size, plain.length, "size unchanged");
+  assert.equal((await download(plainFixed.videoUrl)).compare(plain), 0, "file unchanged");
+  ok("a regular MP4 is left untouched");
+  await owner.call("DELETE", `/api/videos/${plainVideo.id}`);
+
+  // 4. The admin batch endpoint.
+  r = await member.call("POST", "/api/videos/reindex", {});
+  await expectStatus(r, 403, "members can't run the batch repair");
+  r = await owner.call("POST", "/api/videos/reindex", { limit: 5 });
+  await expectStatus(r, 200, "owner runs the batch repair");
+  assert.ok(typeof r.json.remaining === "number" && typeof r.json.processed === "number");
+  ok("batch repair endpoint");
+}
+
 section("cleanup & teardown");
 r = await owner.call("DELETE", `/api/videos/${video.id}`);
 await expectStatus(r, 200, "delete video");

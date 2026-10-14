@@ -7,6 +7,16 @@ import { api } from "@/components/ui";
 import type { Video } from "@/lib/types";
 import { parseStartTime } from "@/lib/format";
 
+/** True once the address answers with data (a byte-range request), so switching to it is instant. */
+async function warmUp(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { headers: { range: "bytes=0-1" }, cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: string }) {
   const [video, setVideo] = useState(initial);
   const [startAt, setStartAt] = useState<number | null>(null);
@@ -24,6 +34,22 @@ export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: s
     return () => clearInterval(t);
   }, [video.id, video.status]);
 
+  // Same as the share page: swap in the repaired file once the seek index is there.
+  useEffect(() => {
+    if (video.status !== "ready" || video.seekIndex !== "pending") return;
+    const started = Date.now();
+    const t = setInterval(async () => {
+      if (Date.now() - started > 15 * 60 * 1000) return; // also while the tab is in the background: it's cheap and it matters
+      const next = await api<Video>(`/api/videos/${video.id}`).catch(() => null);
+      if (!next || next.seekIndex === "pending") return;
+      // Fetch the first bytes of the repaired file first: a brand-new file can take seconds to be served
+      // (cold cache), and that wait belongs here, not in the player after the switch.
+      if (next.videoUrl && !(await warmUp(next.videoUrl))) return; // tried again on the next tick
+      setVideo((v) => ({ ...v, videoUrl: next.videoUrl, downloadUrl: next.downloadUrl, size: next.size, seekIndex: next.seekIndex }));
+    }, 4000);
+    return () => clearInterval(t);
+  }, [video.id, video.status, video.seekIndex]);
+
   return (
     <div className="fixed inset-0 bg-black">
       {video.status === "ready" && video.videoUrl ? (
@@ -33,6 +59,7 @@ export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: s
           startAt={startAt}
           trim={video.trim}
           knownDurationMs={video.originalDurationMs}
+          seekIndex={video.seekIndex}
           className="h-full rounded-none"
           onTime={watch.onTime}
           onFirstPlay={watch.onFirstPlay}

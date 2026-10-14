@@ -26,6 +26,7 @@ import { VIDEO_ID_RE, hashPassword, isEmail, newVideoId, normalizeEmail, randomT
 import { authSecret, secureCookies } from "./env";
 import { ipBucket } from "./client-ip";
 import { StorageError } from "./storage/local";
+import { purgeStaleFiles, scheduleReindex } from "./reindex";
 
 import { PRIVACY_LABELS, type Comment, type Access, type LibraryScope, type Privacy, type Video, type VideoSource, type VideoStatus, type ViewerStats } from "./types";
 export { PRIVACY_LABELS };
@@ -64,7 +65,13 @@ type VideoRow = {
   link_expires_at: Date | null;
   thumb_path: string | null;
   source: VideoSource;
+  seek_index: "pending" | "ready" | "failed";
+  /** Where the file lives once it was rewritten with a seek index (see lib/reindex.ts); else videoPath(). */
+  file_path: string | null;
 };
+
+/** The video file viewers get: the repaired copy when there is one. */
+const filePathOf = (row: VideoRow) => row.file_path ?? videoPath(row.id, row.secret, row.ext);
 
 const VIDEO_SELECT = `
   select v.*, u.name as owner_name, u.email as owner_email, u.avatar_path as owner_avatar
@@ -90,7 +97,7 @@ async function toVideo(
     return avatarCache.get(p)!;
   };
   const [videoUrl, thumbUrl, avatarUrl] = await Promise.all([
-    withUrls && ready && !list ? viewUrl(videoPath(row.id, row.secret, row.ext)) : null,
+    withUrls && ready && !list ? viewUrl(filePathOf(row)) : null,
     withUrls && (row.thumb_path || row.has_thumb) ? viewUrl(row.thumb_path ?? thumbPath(row.id, row.secret)) : null,
     row.owner_avatar ? signAvatar(row.owner_avatar) : null,
   ]);
@@ -113,9 +120,10 @@ async function toVideo(
     archived: row.archived_at !== null,
     owner: { id: row.owner_id, name: row.owner_name, email: inWorkspace ? row.owner_email : "", avatarUrl },
     videoUrl,
-    downloadUrl: canDownload && !list ? await downloadUrl(videoPath(row.id, row.secret, row.ext), downloadName(row.title, row.ext)) : null,
+    downloadUrl: canDownload && !list ? await downloadUrl(filePathOf(row), downloadName(row.title, row.ext)) : null,
     canDownload,
     thumbUrl,
+    seekIndex: row.seek_index,
   };
 }
 
@@ -218,6 +226,8 @@ export async function getVideoFor(id: string, user: CurrentUser | null): Promise
   if (!row) throw new HttpError(404, "This video doesn't exist");
   const access = await accessFor(row, user);
   if (!access) throw new HttpError(user ? 403 : 401, user ? "You don't have access to this video" : "Sign in to watch this video");
+  // Older recordings get their seek index the first time someone opens them (after this response).
+  if (row.status === "ready" && row.seek_index === "pending") scheduleReindex(row.id);
   return { video: await toVideo(row, true, { canDownloadFull: access === "owner", inWorkspace: access !== "link" }), access };
 }
 
@@ -285,6 +295,8 @@ export async function completeVideo(id: string, user: CurrentUser, durationMs: n
   const hasThumb = await thumbExists(row);
   await sql()`update videos set status = 'ready', duration_ms = ${Math.round(durationMs)}, size_bytes = ${Math.round(size)},
     has_thumb = ${hasThumb}, completed_at = now() where id = ${id}`;
+  // Desktop 1.0.14+ uploads already carry a seek index (the check is quick then); older apps don't.
+  scheduleReindex(id);
 }
 
 async function thumbExists(row: VideoRow): Promise<boolean> {
@@ -453,6 +465,7 @@ export async function updateVideo(id: string, user: CurrentUser, patch: VideoPat
 export async function deleteVideo(id: string, user: CurrentUser) {
   const row = await requireOwned(id, user);
   await sql()`delete from videos where id = ${id}`;
+  await sql()`delete from stale_files where pathname like ${`videos/${row.id}/%`}`;
   await deletePrefix(`videos/${row.id}/`).catch((err) => console.error("blob cleanup failed", id, err));
 }
 
@@ -535,11 +548,13 @@ declare global {
 }
 
 export async function failStaleRecordings() {
-  // Recordings whose desktop app never finished (crash, quit) are marked failed after a day.
+  // Recordings whose desktop app never finished (crash, quit) are marked failed after a day, and files
+  // replaced by a repaired copy are deleted once their links have expired.
   // Piggy-backed on library loads, so at most every 10 minutes per server.
   if (Date.now() - (globalThis.__recordiusStaleCheck ?? 0) < 10 * 60 * 1000) return;
   globalThis.__recordiusStaleCheck = Date.now();
   await sql()`update videos set status = 'failed' where status = 'recording' and created_at < now() - interval '1 day'`;
+  await purgeStaleFiles().catch((err) => console.error("[recordius] stale files", err));
 }
 
 // ───────── re-upload (desktop retry after a failed or interrupted upload) ─────────

@@ -38,6 +38,11 @@ export type Video = {
   /** Whether this viewer may download the file (lists leave downloadUrl empty and use /api/videos/:id/download). */
   canDownload: boolean;
   thumbUrl: string | null;
+  /**
+   * Whether the file has a seek index. Recordings from desktop apps before 1.0.14 don't; the server adds
+   * one in the background ("pending" → "ready"). Until then Firefox can't jump ahead in them.
+   */
+  seekIndex: "pending" | "ready" | "failed";
 };
 
 export type Viewer = { name: string; email: string; avatarUrl: string | null; percent: number; lastSeenAt: number };

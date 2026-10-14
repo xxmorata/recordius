@@ -1,4 +1,5 @@
 import {
+  AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
@@ -13,7 +14,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createHash } from "node:crypto";
-import { stableWindow, type StorageDriver } from "./types";
+import { stableWindow, uploadInParts, type StorageDriver } from "./types";
 
 /*
  * Any S3-compatible bucket: AWS S3, Cloudflare R2, Backblaze B2, Wasabi, Hetzner, DigitalOcean Spaces,
@@ -153,6 +154,28 @@ export const s3: StorageDriver = {
   },
   async putUrl(pathname, contentType, ttlMs) {
     return getSignedUrl(client(), new PutObjectCommand({ Bucket: bucket(), Key: pathname, ContentType: contentType }), { expiresIn: seconds(ttlMs) });
+  },
+  async readStream(pathname, range) {
+    const r = await client().send(new GetObjectCommand({ Bucket: bucket(), Key: pathname, Range: range ? `bytes=${range.start}-${range.end}` : undefined }));
+    if (!r.Body) throw new Error("empty response from the bucket");
+    return r.Body.transformToWebStream();
+  },
+  async putStream(pathname, body, contentType) {
+    // Server-side multipart upload, one 8 MB part at a time (S3 wants ≥ 5 MB except for the last part).
+    const Bucket = bucket();
+    const Key = pathname;
+    const { UploadId } = await client().send(new CreateMultipartUploadCommand({ Bucket, Key, ContentType: contentType }));
+    if (!UploadId) throw new Error("The storage didn't start the upload");
+    try {
+      const parts = await uploadInParts(body, async (PartNumber, Body) => {
+        const { ETag } = await client().send(new UploadPartCommand({ Bucket, Key, UploadId, PartNumber, Body }));
+        return { partNumber: PartNumber, etag: ETag ?? "" };
+      });
+      await client().send(new CompleteMultipartUploadCommand({ Bucket, Key, UploadId, MultipartUpload: { Parts: parts.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })) } }));
+    } catch (err) {
+      await client().send(new AbortMultipartUploadCommand({ Bucket, Key, UploadId })).catch(() => {});
+      throw err;
+    }
   },
 };
 

@@ -73,6 +73,14 @@ function cleanUpLocalCopies({ keepDays, activePath = null, now = Date.now() } = 
   }
   let deleted = 0;
   for (const name of names) {
+    // A rewrite (seek index) interrupted by a crash leaves "<recording>.indexing" behind: the original is intact.
+    if (name.endsWith(".indexing")) {
+      try {
+        const file = path.join(config.RECORDINGS_DIR, name);
+        if (now - fs.statSync(file).mtimeMs > 60 * 60 * 1000) fs.rmSync(file);
+      } catch {}
+      continue;
+    }
     const m = RECORDING_NAME.exec(name);
     if (!m) continue;
     const id = m[1];

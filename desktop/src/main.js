@@ -765,6 +765,8 @@ function retryFailedUploads({ manual = false } = {}) {
         if (ext === "mp4") {
           try {
             indexed = mp4Index.finalizeFile(p.localPath);
+            // Remembered: a later retry finds the file already indexed and wouldn't learn the length again.
+            if (indexed && !p.durationMs) safely(() => library.updatePending(p.id, { durationMs: indexed.durationMs }));
           } catch (err) {
             console.warn("[main] no seek index for", p.id, err.message);
           }

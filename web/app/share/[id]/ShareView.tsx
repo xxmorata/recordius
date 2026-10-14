@@ -17,6 +17,16 @@ import { formatDate, formatDuration, formatStartTime, parseStartTime, pluralize 
 
 type Props = { initial: Video; access: Access; shareUrl: string; viewerId: string | null };
 
+/** True once the address answers with data (a byte-range request), so switching to it is instant. */
+async function warmUp(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { headers: { range: "bytes=0-1" }, cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
   const router = useRouter();
   const { toast } = useToast();
@@ -56,6 +66,23 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
     }, video.status === "recording" ? 2500 : 15000);
     return () => clearInterval(t);
   }, [video.id, video.status]);
+
+  // A recording without a seek index is being repaired in the background: pick up the repaired file as soon
+  // as it's there (the player keeps its place and finishes any jump the viewer asked for).
+  useEffect(() => {
+    if (video.status !== "ready" || video.seekIndex !== "pending") return;
+    const started = Date.now();
+    const t = setInterval(async () => {
+      if (Date.now() - started > 15 * 60 * 1000) return; // also while the tab is in the background: it's cheap and it matters
+      const next = await api<Video>(`/api/videos/${video.id}`).catch(() => null);
+      if (!next || next.seekIndex === "pending") return;
+      // Fetch the first bytes of the repaired file first: a brand-new file can take seconds to be served
+      // (cold cache), and that wait belongs here, not in the player after the switch.
+      if (next.videoUrl && !(await warmUp(next.videoUrl))) return; // tried again on the next tick
+      setVideo((v) => ({ ...v, videoUrl: next.videoUrl, downloadUrl: next.downloadUrl, size: next.size, seekIndex: next.seekIndex }));
+    }, 4000);
+    return () => clearInterval(t);
+  }, [video.id, video.status, video.seekIndex]);
 
   // Presigned URLs expire after a few hours; refresh them if the page stays open that long.
   // Swapping the video's address restarts the player, so it waits until the video isn't playing.
@@ -143,11 +170,11 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
       ) : video.status === "ready" && video.videoUrl ? (
         <Player
           ref={player}
-          key={`${video.videoUrl}`}
           src={video.videoUrl}
           poster={video.thumbUrl}
           trim={video.trim}
           knownDurationMs={video.originalDurationMs}
+          seekIndex={video.seekIndex}
           startAt={startAt}
           autoPlay={!own}
           onTime={(s) => {

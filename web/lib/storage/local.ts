@@ -236,4 +236,21 @@ export const local: StorageDriver = {
     const e = String(Date.now() + ttlMs);
     return signedUrl("/api/storage/upload", { p: pathname, ct: contentType, e }, ["put", pathname, contentType, e]);
   },
+  async readStream(pathname, range) {
+    const file = fileFor(pathname);
+    await stat(file); // ENOENT now rather than on first read
+    return Readable.toWeb(createReadStream(file, range ? { start: range.start, end: range.end } : {})) as ReadableStream<Uint8Array>;
+  },
+  async putStream(pathname, body) {
+    const dest = fileFor(pathname);
+    await mkdir(dirname(dest), { recursive: true });
+    const tmp = `${dest}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await pipeline(Readable.from(body), createWriteStream(tmp));
+      await rename(tmp, dest);
+    } catch (err) {
+      await rm(tmp, { force: true });
+      throw err;
+    }
+  },
 };

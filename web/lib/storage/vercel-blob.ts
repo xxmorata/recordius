@@ -1,5 +1,8 @@
-import { del, issueSignedToken, list, presignUrl, put, type IssuedSignedToken } from "@vercel/blob";
-import { stableWindow, type StorageDriver } from "./types";
+import { createMultipartUploader, del, issueSignedToken, list, presignUrl, put, type IssuedSignedToken } from "@vercel/blob";
+import https from "node:https";
+import type { IncomingMessage } from "node:http";
+import { Readable } from "node:stream";
+import { stableWindow, uploadInParts, type StorageDriver } from "./types";
 
 /* A PRIVATE Vercel Blob store. The desktop app and the browser upload with client tokens scoped to one
  * video's own files (see uploadGrant in ../blob.ts); reads are presigned from one store-wide delegation. */
@@ -63,5 +66,25 @@ export const vercelBlob: StorageDriver = {
       if (page.blobs.length) await del(page.blobs.map((b) => b.url), { token: blobToken() });
       cursor = page.hasMore ? page.cursor : undefined;
     } while (cursor);
+  },
+  async readStream(pathname, range) {
+    // Node's own HTTP client rather than fetch: inside a Next.js request (and its after() work) the global
+    // fetch is instrumented, and reading a large body through it was many times slower.
+    const url = await vercelBlob.viewUrl(pathname, 60 * 60 * 1000);
+    const res = await new Promise<IncomingMessage>((resolve, reject) => {
+      https.get(url, { headers: range ? { range: `bytes=${range.start}-${range.end}`, "cache-control": "no-cache" } : { "cache-control": "no-cache" } }, resolve).on("error", reject);
+    });
+    if (res.statusCode !== (range ? 206 : 200)) {
+      res.resume();
+      throw new Error(`reading ${pathname} from Vercel Blob failed (${res.statusCode})`);
+    }
+    return Readable.toWeb(res) as ReadableStream<Uint8Array>;
+  },
+  async putStream(pathname, body, contentType) {
+    // Explicit parts (8 MB each, one at a time): bounded memory, and it finishes for files smaller than a
+    // part too, which put(stream, { multipart: true }) doesn't reliably do.
+    const uploader = await createMultipartUploader(pathname, { access: "private", token: blobToken(), contentType, addRandomSuffix: false, allowOverwrite: true });
+    const parts = await uploadInParts(body, (n, part) => uploader.uploadPart(n, part));
+    await uploader.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag })));
   },
 };
