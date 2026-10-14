@@ -171,11 +171,15 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
     const { base, duration } = bounds.current;
     const landed = v.currentTime - base;
     if (target <= v.duration - base + 1 || Math.abs(landed - target) < 1 || duration <= v.duration - base + 1) return;
+    // The playhead shows where the video really is, not where the click was; the jump happens once it can.
     pendingSeek.current = target;
+    lastPos.current = Math.max(0, landed);
+    setTime(Math.max(0, landed));
+    const at = formatDuration(target * 1000);
     setUnseekable(
       seekIndex === "pending"
-        ? "This browser can't skip ahead in this recording yet — it's being prepared, a moment…"
-        : "This browser can't skip ahead in this recording. Try Chrome or Safari, or let it play.",
+        ? `This browser can't skip ahead in this recording yet — it's being prepared; it will jump to ${at} in a moment…`
+        : `This browser can't skip ahead in this recording. Try Chrome or Safari, or let it play to ${at}.`,
     );
   }, [seekIndex]);
 
@@ -428,7 +432,7 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
         onTimeUpdate={(e) => {
           const t = Math.min(Math.max(0, e.currentTarget.currentTime - bounds.current.base), bounds.current.duration);
           if (!resumeAt.current) lastPos.current = t;
-          if (!scrubbing && pendingSeek.current == null) setTime(t);
+          if (!scrubbing) setTime(t);
           onTime?.(t);
         }}
         onProgress={(e) => {

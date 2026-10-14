@@ -72,13 +72,16 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
   useEffect(() => {
     if (video.status !== "ready" || video.seekIndex !== "pending") return;
     const started = Date.now();
+    let warmTries = 0;
     const t = setInterval(async () => {
       if (Date.now() - started > 15 * 60 * 1000) return; // also while the tab is in the background: it's cheap and it matters
       const next = await api<Video>(`/api/videos/${video.id}`).catch(() => null);
       if (!next || next.seekIndex === "pending") return;
       // Fetch the first bytes of the repaired file first: a brand-new file can take seconds to be served
       // (cold cache), and that wait belongs here, not in the player after the switch.
-      if (next.videoUrl && !(await warmUp(next.videoUrl))) return; // tried again on the next tick
+      // If the warm-up keeps failing (a strict proxy, say), switch anyway after a few tries: the player retries.
+      warmTries++;
+      if (next.videoUrl && warmTries < 5 && !(await warmUp(next.videoUrl))) return; // tried again on the next tick
       setVideo((v) => ({ ...v, videoUrl: next.videoUrl, downloadUrl: next.downloadUrl, size: next.size, seekIndex: next.seekIndex }));
     }, 4000);
     return () => clearInterval(t);
