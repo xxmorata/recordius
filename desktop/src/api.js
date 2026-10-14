@@ -13,18 +13,32 @@ async function call(method, route, body, { server, token } = {}) {
   const bearer = token ?? config.token();
   if (!base || !bearer) throw new ApiError(401, "Not connected to a workspace");
   let res;
-  try {
-    res = await fetch(`${base}${route}`, {
+  const send = () =>
+    fetch(`${base}${route}`, {
       method,
       headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "user-agent": "Recordius-desktop" },
       body: body ? JSON.stringify(body) : undefined,
     });
+  try {
+    try {
+      res = await send();
+    } catch (err) {
+      // A kept-alive connection the server closed at the same moment fails before the request reaches it
+      // (browsers retry this by themselves); one immediate retry on a fresh connection fixes it.
+      if (!isStaleConnection(err)) throw err;
+      res = await send();
+    }
   } catch (err) {
-    throw new ApiError(0, `Can't reach ${base} (${err.message})`);
+    throw new ApiError(0, `Can't reach ${base} (${err.cause?.code ?? err.message})`);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, data.error ?? `${method} ${route} failed (${res.status})`, data.code ?? null);
   return data;
+}
+
+function isStaleConnection(err) {
+  const code = err?.cause?.code ?? err?.code;
+  return code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "EPIPE";
 }
 
 module.exports = {

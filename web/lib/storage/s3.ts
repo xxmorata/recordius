@@ -12,6 +12,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createHash } from "node:crypto";
 import type { StorageDriver } from "./types";
 
 /*
@@ -55,6 +56,26 @@ function client(): S3Client {
 }
 
 const bucket = () => s3Config().bucket;
+
+/**
+ * DeleteObjects and PutBucketCors must carry a body checksum. Newer AWS SDKs send CRC32 headers, which many
+ * S3-compatible servers don't understand (they want the classic Content-MD5) — send Content-MD5 instead.
+ * AWS itself accepts both.
+ */
+function withContentMd5<T extends { middlewareStack: { add: (...a: never[]) => void } }>(command: T): T {
+  (command.middlewareStack as unknown as { add: (mw: unknown, opts: unknown) => void }).add(
+    (next: (args: unknown) => Promise<unknown>) => async (args: { request?: { body?: unknown; headers?: Record<string, string> } }) => {
+      const req = args.request;
+      if (req?.headers && (typeof req.body === "string" || req.body instanceof Uint8Array)) {
+        for (const h of Object.keys(req.headers)) if (/^x-amz-(checksum-|sdk-checksum-algorithm)/i.test(h)) delete req.headers[h];
+        req.headers["content-md5"] = createHash("md5").update(req.body).digest("base64");
+      }
+      return next(args);
+    },
+    { step: "build", priority: "low", name: "recordiusContentMd5" },
+  );
+  return command;
+}
 const seconds = (ms: number) => Math.max(60, Math.min(Math.floor(ms / 1000), 7 * 24 * 3600)); // S3 allows up to 7 days
 
 function isNotFound(err: unknown) {
@@ -100,7 +121,7 @@ export const s3: StorageDriver = {
       const keys = (page.Contents ?? []).map((o) => o.Key!).filter(Boolean);
       if (keys.length) {
         try {
-          await client().send(new DeleteObjectsCommand({ Bucket: bucket(), Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true } }));
+          await client().send(withContentMd5(new DeleteObjectsCommand({ Bucket: bucket(), Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true } })));
         } catch {
           // A few S3-compatible servers don't implement batch delete.
           for (const Key of keys) await client().send(new DeleteObjectCommand({ Bucket: bucket(), Key }));
@@ -138,7 +159,7 @@ export const s3: StorageDriver = {
  */
 export async function ensureBucketCors(origin: string) {
   await client().send(
-    new PutBucketCorsCommand({
+    withContentMd5(new PutBucketCorsCommand({
       Bucket: bucket(),
       CORSConfiguration: {
         CORSRules: [
@@ -151,6 +172,6 @@ export async function ensureBucketCors(origin: string) {
           },
         ],
       },
-    }),
+    })),
   );
 }

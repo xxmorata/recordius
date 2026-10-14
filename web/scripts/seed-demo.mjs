@@ -19,7 +19,9 @@ async function call(method, path, body, bearer) {
   const headers = { "content-type": "application/json" };
   if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
   if (bearer) headers.authorization = `Bearer ${bearer}`;
-  const res = await fetch(BASE + path, { method, headers, body: body && JSON.stringify(body) });
+  const send = () => fetch(BASE + path, { method, headers, body: body && JSON.stringify(body) });
+  // Retry once when a kept-alive connection was closed by the server at the same moment.
+  const res = await send().catch((err) => (["ECONNRESET", "UND_ERR_SOCKET"].includes(err.cause?.code) ? send() : Promise.reject(err)));
   for (const c of res.headers.getSetCookie?.() ?? []) {
     const [k, v] = c.split(";")[0].split("=");
     jar.set(k.trim(), v);

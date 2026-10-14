@@ -27,7 +27,9 @@ function client() {
     const headers = { ...(body !== undefined && !(body instanceof FormData) ? { "content-type": "application/json" } : {}), ...extra.headers };
     if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
     if (bearer) headers.authorization = `Bearer ${bearer}`;
-    const res = await fetch(BASE + path, { method, headers, body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body), redirect: "manual" });
+    const send = () => fetch(BASE + path, { method, headers, body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body), redirect: "manual" });
+    // Retry once when a kept-alive connection was closed by the server at the same moment (not an app error).
+    const res = await send().catch((err) => (["ECONNRESET", "UND_ERR_SOCKET"].includes(err.cause?.code) ? send() : Promise.reject(err)));
     for (const c of res.headers.getSetCookie?.() ?? []) {
       const [pair, ...attrs] = c.split(";");
       const [k, v] = pair.split("=");
