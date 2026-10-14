@@ -158,6 +158,13 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
     out({ ok, retry: r });
   };
 
+  // RECORDIUS_E2E_SOURCE=screen records the real screen (needs Screen Recording permission); default: camera.
+  const testPlan = async () => {
+    if (process.env.RECORDIUS_E2E_SOURCE !== "screen") return { source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false };
+    const [screen] = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
+    return { source: "screen", sourceId: screen?.id ?? null, cameraId: "none", micId: "none", systemAudio: false, countdown: false };
+  };
+
   const runSignedOut = async () => {
     showPanel();
     await until(() => win.panel && !win.panel.webContents.isLoading());
@@ -188,7 +195,7 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
       if (mode === "quit-recording") {
         // ⌘Q while recording: the recording must be complete on disk and queued for the next start.
         const library = require("./library");
-        startRecording({ source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false });
+        startRecording(await testPlan());
         if ((await until(() => getState() === "recording", 30000)) === null) throw new Error(`recording did not start (state=${getState()})`);
         const rec = getRec();
         await wait(5000);
@@ -204,7 +211,7 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
         // What's being recorded goes away (window closed, display unplugged) — or the capture process dies:
         // the app must stop by itself, upload what it has and be ready to record again.
         const api = require("./api");
-        startRecording({ source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false });
+        startRecording(await testPlan());
         if ((await until(() => getState() === "recording", 30000)) === null) throw new Error(`recording did not start (state=${getState()})`);
         const rec = getRec();
         await wait(mode === "recorder-crash" ? 12000 : 4000); // the MP4 muxer hands over data every few seconds
@@ -213,8 +220,9 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
         const back = await until(() => getState() === "idle", 60000);
         await wait(3000);
         const video = (await api.recent(5)).videos.find((v) => v.id === rec.video.id);
+        const againPlan = await testPlan();
         const again = await new Promise((resolve) => {
-          startRecording({ source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false });
+          startRecording(againPlan);
           until(() => getState() === "recording", 30000).then((t) => resolve(t !== null));
         });
         if (again) {
