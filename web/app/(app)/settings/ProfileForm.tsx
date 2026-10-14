@@ -45,9 +45,14 @@ export function ProfileForm({ user }: { user: { name: string; email: string; ava
   }
 
   async function removeAvatar() {
-    await api("/api/profile/avatar", { method: "DELETE" });
-    setAvatarUrl(null);
-    router.refresh();
+    try {
+      await api("/api/profile/avatar", { method: "DELETE" });
+      setAvatarUrl(null);
+      toast("Photo removed");
+      router.refresh();
+    } catch (err) {
+      toast((err as Error).message, "error");
+    }
   }
 
   async function changePassword(e: React.FormEvent<HTMLFormElement>) {
@@ -71,7 +76,11 @@ export function ProfileForm({ user }: { user: { name: string; email: string; ava
         <div className="mt-5 flex items-center gap-4">
           <Avatar name={name || user.name} url={avatarUrl} size={64} />
           <div className="flex gap-2">
-            <input ref={file} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+            <input ref={file} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = ""; // picking the same file again (after an error) must work
+                if (f) upload(f);
+              }} />
             <Button variant="secondary" size="sm" loading={uploading} onClick={() => file.current?.click()}>
               Upload photo
             </Button>

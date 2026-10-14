@@ -60,8 +60,8 @@ async function userForSession(token: string): Promise<CurrentUser | null> {
     [hashToken(token)],
   );
   if (!rows[0]) return null;
-  // Touch at most once an hour to keep writes down.
-  await db`update sessions set last_seen_at = now() where token_hash = ${hashToken(token)} and last_seen_at < now() - interval '1 hour'`;
+  // Touch at most once an hour to keep writes down — without making the request wait for it.
+  db`update sessions set last_seen_at = now() where token_hash = ${hashToken(token)} and last_seen_at < now() - interval '1 hour'`.catch(() => {});
   return toUser(rows[0], "session");
 }
 
@@ -74,7 +74,7 @@ async function userForDeviceToken(token: string): Promise<CurrentUser | null> {
     [hashToken(token)],
   );
   if (!rows[0]) return null;
-  await db`update device_tokens set last_used_at = now() where token_hash = ${hashToken(token)} and (last_used_at is null or last_used_at < now() - interval '10 minutes')`;
+  db`update device_tokens set last_used_at = now() where token_hash = ${hashToken(token)} and (last_used_at is null or last_used_at < now() - interval '10 minutes')`.catch(() => {});
   return toUser(rows[0], "device");
 }
 

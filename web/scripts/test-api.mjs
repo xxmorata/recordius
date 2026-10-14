@@ -504,6 +504,44 @@ await expectStatus(r, 403, "losing access hides comments");
 r = await owner.call("PATCH", `/api/videos/${video.id}`, { privacy: "link" });
 r = await owner.call("GET", `/api/videos/${"0".repeat(32)}/comments`);
 await expectStatus(r, 404, "comments on a missing video");
+// comment times stay on the same moment of the file when the trim changes
+await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 1000, endMs: 3500 } });
+r = await member.call("POST", `/api/videos/${video.id}/comments`, { body: "at 0:00.5 of the trimmed video", atMs: 500 });
+const trimmedComment = r.json.id;
+r = await member.call("GET", `/api/videos/${video.id}/comments`);
+assert.equal(r.json.comments.find((c) => c.id === trimmedComment).atMs, 500);
+await owner.call("PATCH", `/api/videos/${video.id}`, { trim: null });
+r = await member.call("GET", `/api/videos/${video.id}/comments`);
+assert.equal(r.json.comments.find((c) => c.id === trimmedComment).atMs, 1500, "same moment in the file after the trim is removed");
+await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 2000, endMs: 3500 } });
+r = await member.call("GET", `/api/videos/${video.id}/comments`);
+assert.equal(r.json.comments.find((c) => c.id === trimmedComment).atMs, null, "a comment in a part that's cut away shows no time");
+await owner.call("PATCH", `/api/videos/${video.id}`, { trim: null });
+await member.call("DELETE", `/api/videos/${video.id}/comments/${trimmedComment}`);
+ok("comment times follow the file when the trim changes");
+
+// lists are light; downloads go through a redirect that checks access
+r = await owner.call("GET", "/api/videos?scope=mine");
+{
+  const listed = r.json.videos.find((v) => v.id === video.id);
+  assert.equal(listed.videoUrl, null);
+  assert.equal(listed.downloadUrl, null);
+  assert.equal(listed.canDownload, true);
+  assert.ok(listed.thumbUrl);
+  const again = (await owner.call("GET", "/api/videos?scope=mine")).json.videos.find((v) => v.id === video.id);
+  assert.equal(again.thumbUrl, listed.thumbUrl, "thumbnail URLs are stable (cacheable) within the hour");
+}
+ok("library list skips player/download links and keeps thumbnail URLs stable");
+r = await owner.call("GET", `/api/videos/${video.id}/download`);
+assert.equal(r.status, 302);
+assert.equal((await fetch(r.headers.get("location"), { headers: { range: "bytes=0-0" } })).status, 206);
+ok("download redirect works for the owner");
+await owner.call("PATCH", `/api/videos/${video.id}`, { trim: { startMs: 1000, endMs: 3500 } });
+r = await anon.call("GET", `/api/videos/${video.id}/download`);
+await expectStatus(r, 403, "link viewers can't download the uncut file of a trimmed video");
+await owner.call("PATCH", `/api/videos/${video.id}`, { trim: null });
+r = await owner.call("PATCH", `/api/videos/${video.id}`, { linkPassword: "x".repeat(201) });
+await expectStatus(r, 400, "link passwords longer than 200 characters are refused, not cut");
 
 // oEmbed + stable poster: only for videos anyone can watch
 const shareLink = `${BASE}/share/${video.id}`;

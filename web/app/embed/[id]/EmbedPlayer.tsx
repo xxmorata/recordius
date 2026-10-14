@@ -17,6 +17,7 @@ export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: s
   useEffect(() => {
     if (video.status !== "recording") return;
     const t = setInterval(async () => {
+      if (document.hidden) return; // embedded in a background tab or scrolled away in another app
       const next = await api<Video>(`/api/videos/${video.id}`).catch(() => null);
       if (next && next.status !== "recording") setVideo(next);
     }, 3000);

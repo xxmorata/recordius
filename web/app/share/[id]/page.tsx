@@ -7,21 +7,29 @@ import { Avatar } from "@/components/ui";
 import { HttpError, currentUser } from "@/lib/auth";
 import { viewUrl } from "@/lib/blob";
 import { appUrl } from "@/lib/env";
-import { LinkLockedError, getVideoFor, publicPreview, videoExists } from "@/lib/videos";
+import { cache } from "react";
+import { LinkLockedError, getVideoFor, videoExists } from "@/lib/videos";
+import type { Video } from "@/lib/types";
 import { LinkGate } from "@/components/LinkGate";
 
 type Props = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
 
+// Metadata and page need the same video: load (and sign its URLs) once per request.
+const loadVideo = cache(async (id: string) => getVideoFor(id, await currentUser()));
+
+/** Anyone can watch it without an account or password (same rule as publicPreview / oEmbed). */
+const isPublicVideo = (v: Video) => v.status === "ready" && v.privacy === "link" && !v.link.hasPassword && !(v.link.expiresAt && v.link.expiresAt < Date.now());
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
-    const { video } = await getVideoFor(id, await currentUser());
+    const { video } = await loadVideo(id);
     const url = `${appUrl()}/share/${id}`;
     // Publicly watchable videos get a stable poster URL (link previews cache images for a long time)
     // and an oEmbed endpoint so Notion/Slack can embed the player.
-    const isPublic = Boolean(await publicPreview(id));
+    const isPublic = isPublicVideo(video);
     const poster = isPublic && video.thumbUrl ? `${appUrl()}/api/videos/${id}/poster` : video.thumbUrl;
     return {
       title: video.title,
@@ -49,7 +57,7 @@ export default async function SharePage({ params }: Props) {
   const user = await currentUser();
   let result: Awaited<ReturnType<typeof getVideoFor>>;
   try {
-    result = await getVideoFor(id, user);
+    result = await loadVideo(id);
   } catch (err) {
     if (err instanceof LinkLockedError) return <LinkGate videoId={id} reason={err.reason} />;
     if (err instanceof HttpError && err.status === 401) redirect(`/login?next=${encodeURIComponent(`/share/${id}`)}`);
@@ -88,7 +96,7 @@ function NoAccess({ exists, userEmail }: { exists: boolean; userEmail: string | 
     <main className="grid min-h-dvh place-items-center px-4 text-center">
       <div className="flex max-w-md flex-col items-center gap-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/brand/mascot-512.png" alt="" className="h-28 w-auto" />
+        <img src="/brand/mascot-256.png" alt="" className="h-28 w-auto" />
         <Wordmark className="h-6 text-ink" />
         {exists ? (
           <>

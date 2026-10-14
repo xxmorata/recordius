@@ -40,6 +40,9 @@ const PANEL_WINDOW = PANEL_WIDTH + PANEL_MARGIN * 2;
 const BUBBLE_MARGIN = 24;
 const CONTROLS_WIDTH = 60; // bar is 52 px; the window hugs it (no shadow to make room for)
 const E2E = Boolean(process.env.RECORDIUS_E2E);
+// A stray error must never take the recorder down or pop up Electron's crash dialog mid-recording: log it.
+process.on("uncaughtException", (err) => console.error("[recordius] unexpected error", err));
+process.on("unhandledRejection", (err) => console.error("[recordius] unhandled promise rejection", err));
 const log = (...args) => process.env.RECORDIUS_DEBUG && console.log("[recordius]", ...args);
 
 /** @type {"idle"|"preparing"|"recording"|"paused"|"stopping"} */
@@ -60,6 +63,7 @@ let pendingDeepLinks = [];
 let panelHideStamp = 0;
 let panelShowStamp = 0;
 let quitting = false; // set on before-quit so windows that normally just hide let the app quit
+let pausedForSleep = false;
 
 // ───────────────────────────── windows ─────────────────────────────
 
@@ -236,8 +240,19 @@ function showCountdown(display) {
 }
 
 function ensureRecorderWindow() {
-  if (win.recorder) return win.recorder;
-  return createWindow("recorder", { width: 400, height: 300 }, "recorder.html");
+  if (win.recorder && !win.recorder.isDestroyed()) return win.recorder;
+  const w = createWindow("recorder", { width: 400, height: 300 }, "recorder.html");
+  // If the capture process dies mid-recording, finish with what was recorded and start a fresh one.
+  w.webContents.on("render-process-gone", (_e, details) => {
+    console.error("[main] recorder process gone", details.reason);
+    if (win.recorder === w) win.recorder = null;
+    if (!w.isDestroyed()) w.destroy();
+    if (state === "recording" || state === "paused") {
+      notify("Recording stopped", "Recordius' recorder stopped unexpectedly. Everything recorded until now is being uploaded.");
+      stopRecording({ recorderGone: true });
+    }
+  });
+  return w;
 }
 
 // ───────────────────────────── tray & dock ─────────────────────────────
@@ -259,10 +274,18 @@ function fmt(ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function refreshTray() {
+/** Just the timer next to the menu-bar icon (cheap; runs while recording). */
+function updateTrayTitle() {
   if (!tray) return;
   const recording = state === "recording" || state === "paused";
   tray.setTitle(recording ? ` ${state === "paused" ? "❚❚" : "●"} ${fmt(elapsedMs())}` : "");
+}
+
+/** Rebuilds the menu — only when state, account or queue change. */
+function refreshTray() {
+  if (!tray) return;
+  const recording = state === "recording" || state === "paused";
+  updateTrayTitle();
   const template = [
     recording
       ? { label: "Stop recording", accelerator: SHORTCUT_TOGGLE, click: () => stopRecording() }
@@ -297,7 +320,7 @@ function setState(next) {
   clearInterval(trayTimer);
   if (state === "recording" || state === "paused") {
     trayTimer = setInterval(() => {
-      refreshTray();
+      updateTrayTitle();
       win.controls?.webContents.send("controls:state", { state, elapsedMs: elapsedMs() });
     }, 500);
   }
@@ -450,7 +473,8 @@ function checkedVideo(video) {
 
 // ───────────────────────────── recording lifecycle ─────────────────────────────
 
-function recorderRequest(channel, payload, reply) {
+/** Asks the hidden recorder window for something; never waits forever (a crashed renderer never answers). */
+function recorderRequest(channel, payload, reply, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const ok = (_e, data) => {
       cleanup();
@@ -460,13 +484,20 @@ function recorderRequest(channel, payload, reply) {
       cleanup();
       reject(new Error(message));
     };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`the recorder didn't answer (${channel})`));
+    }, timeoutMs);
     const cleanup = () => {
+      clearTimeout(timer);
       ipcMain.removeListener(reply, ok);
       ipcMain.removeListener("rec:error", fail);
     };
     ipcMain.once(reply, ok);
     ipcMain.once("rec:error", fail);
-    win.recorder.webContents.send(channel, payload);
+    const recorder = ensureRecorderWindow();
+    if (recorder.isDestroyed()) return fail(null, "the recorder window is gone");
+    recorder.webContents.send(channel, payload);
   });
 }
 
@@ -510,6 +541,12 @@ async function startRecording(opts) {
     const countdown = plan.countdown === false ? Promise.resolve() : showCountdown(display);
     const video = checkedVideo(await api.createVideo(defaultTitle(), prepared.mimeType));
     log("session created", video.id);
+    if (state !== "preparing") {
+      // Cancelled while we were preparing: nothing to keep.
+      win.recorder?.webContents.send("rec:discard");
+      api.deleteVideo(video.id).catch(() => {});
+      return;
+    }
     fs.mkdirSync(config.RECORDINGS_DIR, { recursive: true });
     const ext = video.ext;
     const localPath = path.join(config.RECORDINGS_DIR, `${stamp()} ${video.id}.${ext}`);
@@ -524,11 +561,18 @@ async function startRecording(opts) {
       pausedAt: 0,
       pausedTotal: 0,
     };
+    rec.settings = settings; // what the user chose (restart uses this, not the derived plan)
     rec.uploader = new LiveUploader({ target: rec.target, contentType: prepared.mimeType.split(";")[0], localPath });
+    // Queued from the very start: if the app crashes, the Mac shuts down or Recordius is quit while
+    // recording, the next start finds the local file and finishes the upload. Not retried meanwhile.
+    uploadingIds.add(video.id);
+    safely(() =>
+      library.addPending({ id: video.id, server: api.serverUrl(), account: config.load().account?.email ?? null, localPath, durationMs: 0, recordingStartedAt: Date.now(), title: video.title, shareUrl: video.shareUrl, contentType: prepared.mimeType.split(";")[0], failedAt: Date.now() }),
+    );
     if (prepared.warning) notify("Recordius", prepared.warning);
     await countdown;
     await cameraReady; // never start recording before the bubble shows a picture
-    if (state !== "preparing") return; // cancelled during countdown
+    if (state !== "preparing" || rec?.video.id !== video.id) return; // cancelled meanwhile (cancelRecording cleaned up)
     await recorderRequest("rec:start", null, "rec:started");
     rec.startedAt = Date.now();
     showControls(display);
@@ -540,6 +584,7 @@ async function startRecording(opts) {
     win.recorder?.webContents.send("rec:discard");
     if (rec) {
       rec.uploader.abort();
+      forgetRecording(rec);
       api.deleteVideo(rec.video.id).catch(() => {});
       rec = null;
     }
@@ -550,16 +595,26 @@ async function startRecording(opts) {
   }
 }
 
-async function stopRecording() {
+async function stopRecording({ recorderGone = false } = {}) {
   if (state !== "recording" && state !== "paused") return;
   const sessionRec = rec;
   const durationMs = elapsedMs();
   setState("stopping");
   win.controls?.close();
   hideCamera();
-  await recorderRequest("rec:stop", null, "rec:stopped").catch((err) => console.error("[main] stop", err));
+  // A crashed recorder can't answer; everything it sent before is already in the uploader.
+  if (!recorderGone) await recorderRequest("rec:stop", null, "rec:stopped").catch((err) => console.error("[main] stop", err));
   rec = null;
   setState("idle");
+
+  // Nothing reached us (stopped or crashed within the first moments): there's no video to share.
+  if (sessionRec.uploader.totalBytes === 0) {
+    sessionRec.uploader.abort();
+    forgetRecording(sessionRec);
+    api.deleteVideo(sessionRec.video.id).catch(() => {});
+    notify("Nothing was recorded", "The recording stopped before any video was captured. Try again.");
+    return;
+  }
 
   // Exactly Loom's openSharePageAndCopyUrl: the link is ready the moment you stop.
   if (!E2E) {
@@ -570,10 +625,26 @@ async function stopRecording() {
   await finishUpload(sessionRec, durationMs);
 }
 
+/** Runs a bookkeeping write that must never break a recording or an upload (disk full, permissions…). */
+function safely(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    console.error("[main] couldn't update the upload queue", err.message);
+  }
+}
+
+/** A cancelled or failed-to-start recording: delete its local file and queue entry. */
+function forgetRecording(sessionRec) {
+  uploadingIds.delete(sessionRec.video.id);
+  safely(() => library.removePending(sessionRec.video.id));
+  fs.rm(sessionRec.localPath, { force: true }, () => {});
+}
+
 async function finishUpload(sessionRec, durationMs) {
   const { video, localPath } = sessionRec;
   // Written before the upload finishes, so quitting or a crash mid-upload is retried on the next start.
-  library.addPending({ id: video.id, server: api.serverUrl(), account: config.load().account?.email ?? null, localPath, durationMs, title: video.title, shareUrl: video.shareUrl, contentType: sessionRec.mimeType?.split(";")[0], failedAt: Date.now() });
+  safely(() => library.addPending({ id: video.id, server: api.serverUrl(), account: config.load().account?.email ?? null, localPath, durationMs, title: video.title, shareUrl: video.shareUrl, contentType: sessionRec.mimeType?.split(";")[0], failedAt: Date.now() }));
   uploadingIds.add(video.id);
   try {
     await sessionRec.uploader.finish();
@@ -584,7 +655,7 @@ async function finishUpload(sessionRec, durationMs) {
     win.panel?.webContents.send("panel:recent-changed");
   } catch (err) {
     console.error("[main] upload failed", err);
-    library.updatePending(video.id, { failedAt: Date.now(), error: err.message });
+    safely(() => library.updatePending(video.id, { failedAt: Date.now(), error: err.message }));
     notify("Upload didn’t finish", "Your recording is saved on this Mac. Recordius will keep retrying — or click Retry in the app.");
   } finally {
     uploadingIds.delete(video.id);
@@ -624,6 +695,13 @@ function retryFailedUploads({ manual = false } = {}) {
         library.removePending(p.id); // the only copy is gone; nothing left to upload
         continue;
       }
+      if (fs.statSync(p.localPath).size === 0) {
+        // Interrupted before the first second was written: there is no video to upload.
+        library.removePending(p.id);
+        fs.rm(p.localPath, { force: true }, () => {});
+        api.deleteVideo(p.id).catch(() => {});
+        continue;
+      }
       uploadingIds.add(p.id);
       try {
         let upload;
@@ -644,7 +722,10 @@ function retryFailedUploads({ manual = false } = {}) {
         }
         const ext = path.extname(p.localPath).slice(1);
         await uploadFile(uploadTarget(upload, p.id, api.upload), p.localPath, p.contentType ?? (ext === "webm" ? "video/webm" : "video/mp4"));
-        await api.completeVideo(p.id, p.durationMs, fs.statSync(p.localPath).size);
+        const info = fs.statSync(p.localPath);
+        // Interrupted mid-recording (crash, quit): the length is roughly from start to the last write.
+        const durationMs = p.durationMs || Math.max(1000, info.mtimeMs - (p.recordingStartedAt ?? info.birthtimeMs));
+        await api.completeVideo(p.id, durationMs, info.size);
         library.removePending(p.id);
         library.markUploaded(p.id, p.localPath);
         done++;
@@ -674,7 +755,7 @@ function cleanUpLocalCopies() {
 async function cancelRecording({ restart = false } = {}) {
   if (!["preparing", "recording", "paused"].includes(state)) return;
   const sessionRec = rec;
-  const settings = sessionRec?.plan ?? config.load();
+  const settings = sessionRec?.settings ?? config.load();
   rec = null;
   win.controls?.close();
   if (win.countdown && !win.countdown.isDestroyed()) win.countdown.close();
@@ -683,7 +764,7 @@ async function cancelRecording({ restart = false } = {}) {
   setState("idle");
   if (sessionRec) {
     sessionRec.uploader.abort();
-    fs.rm(sessionRec.localPath, { force: true }, () => {});
+    forgetRecording(sessionRec);
     api.deleteVideo(sessionRec.video.id).catch(() => {});
   }
   if (restart) setTimeout(() => startRecording(settings), 300);
@@ -692,12 +773,12 @@ async function cancelRecording({ restart = false } = {}) {
 function togglePause() {
   if (state === "recording") {
     rec.pausedAt = Date.now();
-    win.recorder.webContents.send("rec:pause");
+    win.recorder?.webContents.send("rec:pause");
     setState("paused");
   } else if (state === "paused") {
     rec.pausedTotal += Date.now() - rec.pausedAt;
     rec.pausedAt = 0;
-    win.recorder.webContents.send("rec:resume");
+    win.recorder?.webContents.send("rec:resume");
     setState("recording");
   }
 }
@@ -735,6 +816,15 @@ ipcMain.handle("panel:init", async () => ({
   pendingUploads: failedUploads().length,
   shortcuts: { toggle: "⌘⇧R", pause: "⌘⇧P" },
 }));
+
+// App icons don't change while we run: resize + encode each distinct icon once (keyed by its pixels).
+const iconCache = new Map();
+function appIconUrl(w) {
+  if (!w.appIcon || w.appIcon.isEmpty()) return null;
+  const key = require("node:crypto").createHash("md5").update(w.appIcon.toBitmap()).digest("hex");
+  if (!iconCache.has(key)) iconCache.set(key, w.appIcon.resize({ width: 36 }).toDataURL());
+  return iconCache.get(key);
+}
 
 const JUNK_WINDOWS = new Set(["", "Recordius", "Dock", "Window Server", "Menubar", "Item-0", "StatusIndicator", "Notification Center", "Control Center"]);
 
@@ -774,14 +864,15 @@ ipcMain.handle("panel:sources", async () => {
       return {
         id: s.id,
         name: screens.length > 1 ? `Display ${i + 1}` : "Full screen",
-        thumbnail: s.thumbnail.toDataURL(),
+        // JPEG: several times faster to encode than PNG and smaller to send to the panel.
+        thumbnail: `data:image/jpeg;base64,${s.thumbnail.toJPEG(80).toString("base64")}`,
         size: d ? `${Math.round(d.size.width * d.scaleFactor)}×${Math.round(d.size.height * d.scaleFactor)}` : null,
       };
     }),
     windows: windows
       .filter((w) => !JUNK_WINDOWS.has(w.name.trim()) && !ownTitles.has(w.name) && !w.name.startsWith("Recordius "))
       .filter((w) => (seen.has(w.id) ? false : seen.add(w.id)))
-      .map((w) => ({ id: w.id, name: w.name.trim(), icon: w.appIcon && !w.appIcon.isEmpty() ? w.appIcon.resize({ width: 36 }).toDataURL() : null }))
+      .map((w) => ({ id: w.id, name: w.name.trim(), icon: appIconUrl(w) }))
       .sort((a, b) => a.name.localeCompare(b.name)),
   };
 });
@@ -913,6 +1004,18 @@ ipcMain.handle("controls:camera-state", () => ({ hasCamera: rec?.plan.mode === "
 
 // recorder
 ipcMain.on("rec:chunk", (_e, chunk) => rec?.uploader.push(Buffer.from(chunk)));
+// The recorded window was closed / display unplugged, or the encoder failed: stop and keep what's there.
+ipcMain.on("rec:source-ended", () => {
+  if (state !== "recording" && state !== "paused") return;
+  notify("Recording stopped", "What you were recording went away (window closed or display disconnected). Your video is being uploaded.");
+  stopRecording();
+});
+ipcMain.on("rec:failed", (_e, message) => {
+  if (state !== "recording" && state !== "paused") return;
+  console.error("[main] recorder failed", message);
+  notify("Recording stopped", `The recorder ran into a problem (${message}). Everything until now is being uploaded.`);
+  stopRecording();
+});
 ipcMain.on("rec:thumbnail", (_e, jpeg) => {
   if (!rec) return;
   const id = rec.video.id;
@@ -958,7 +1061,7 @@ app.whenReady().then(async () => {
   // The recorder renderer asks for system audio via getDisplayMedia; answer with the chosen source.
   session.defaultSession.setDisplayMediaRequestHandler(
     async (_request, callback) => {
-      const sources = await desktopCapturer.getSources({ types: ["screen", "window"] });
+      const sources = await desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 0, height: 0 } });
       const source = sources.find((s) => s.id === pendingSourceId) ?? sources.find((s) => s.id.startsWith("screen:"));
       callback(pendingSystemAudio ? { video: source, audio: "loopback" } : { video: source });
     },
@@ -1001,12 +1104,39 @@ app.whenReady().then(async () => {
     setInterval(() => config.isConnected() && failedUploads().length && retryFailedUploads(), 5 * 60 * 1000);
     powerMonitor.on("resume", () => setTimeout(() => config.isConnected() && failedUploads().length && retryFailedUploads(), 15000));
   }
+  // Lid closed / sleep mid-recording: pause, so the video (and its length) doesn't include the sleep.
+  powerMonitor.on("suspend", () => {
+    if (state === "recording") {
+      togglePause();
+      pausedForSleep = true;
+    }
+  });
+  powerMonitor.on("resume", () => {
+    if (pausedForSleep && state === "paused") notify("Recording paused", "Your Mac went to sleep, so Recordius paused the recording. Press ⌘⇧P to continue or ⌘⇧R to finish.");
+    pausedForSleep = false;
+  });
   setTimeout(cleanUpLocalCopies, 20000);
   setInterval(cleanUpLocalCopies, 24 * 60 * 60 * 1000);
 });
 
 app.on("window-all-closed", (e) => e.preventDefault()); // menu-bar app: keep running
-app.on("before-quit", () => (quitting = true));
+// Quitting (⌘Q, menu, logout, shutdown) while recording: stop the recorder and close the local file first,
+// so the recording is complete on disk. Its queue entry (written at start) makes the next start upload it.
+let quitAfterRecording = false;
+app.on("before-quit", (e) => {
+  quitting = true;
+  if ((state !== "recording" && state !== "paused") || quitAfterRecording || !rec) return;
+  e.preventDefault();
+  quitAfterRecording = true;
+  const sessionRec = rec;
+  const durationMs = elapsedMs();
+  setState("stopping");
+  recorderRequest("rec:stop", null, "rec:stopped", 10000)
+    .catch(() => {})
+    .then(() => sessionRec.uploader.closeFile())
+    .then(() => safely(() => library.updatePending(sessionRec.video.id, { durationMs, failedAt: Date.now(), error: "Recordius was quit while recording" })))
+    .finally(() => app.quit());
+});
 app.on("will-quit", () => globalShortcut.unregisterAll());
 
 if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, handleDeepLink, startConnect, hostname: os.hostname() });

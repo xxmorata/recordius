@@ -13,7 +13,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createHash } from "node:crypto";
-import type { StorageDriver } from "./types";
+import { stableWindow, type StorageDriver } from "./types";
 
 /*
  * Any S3-compatible bucket: AWS S3, Cloudflare R2, Backblaze B2, Wasabi, Hetzner, DigitalOcean Spaces,
@@ -93,7 +93,10 @@ export const s3: StorageDriver = {
         Key: pathname,
         ResponseContentDisposition: downloadName ? `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}` : undefined,
       }),
-      { expiresIn: seconds(ttlMs) },
+      (() => {
+        const { signedAt, expiresAt } = stableWindow(ttlMs);
+        return { signingDate: new Date(signedAt), expiresIn: seconds(expiresAt - signedAt) };
+      })(),
     );
   },
   async put(pathname, body, contentType) {

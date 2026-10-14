@@ -58,14 +58,18 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
   }, [video.id, video.status]);
 
   // Presigned URLs expire after a few hours; refresh them if the page stays open that long.
+  // Swapping the video's address restarts the player, so it waits until the video isn't playing.
   useEffect(() => {
     if (video.status !== "ready") return;
+    const loadedAt = Date.now();
     const t = setInterval(async () => {
+      const playing = Array.from(document.querySelectorAll("video")).some((el) => !el.paused && !el.ended);
+      if (Date.now() - loadedAt < 4 * 60 * 60 * 1000 || playing || document.hidden) return;
       const next = await api<Video>(`/api/videos/${video.id}`).catch(() => null);
       if (next?.videoUrl) setVideo((v) => ({ ...v, videoUrl: next.videoUrl, downloadUrl: next.downloadUrl, thumbUrl: next.thumbUrl }));
-    }, 4 * 60 * 60 * 1000);
+    }, 5 * 60 * 1000);
     return () => clearInterval(t);
-  }, [video.id, video.status]);
+  }, [video.id, video.status, video.videoUrl]);
 
   async function copy(kind: "link" | "time") {
     await navigator.clipboard.writeText(kind === "link" ? shareUrl : `${shareUrl}?t=${formatStartTime(position)}`);
@@ -73,11 +77,18 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
     setTimeout(() => setCopied(null), 1500);
   }
 
+  // The player is remounted after trimming: it starts at the (new) beginning, not at an old ?t= or position.
+  function leaveTrim() {
+    setTrimming(false);
+    setPosition(0);
+    setStartAt(null);
+  }
+
   async function saveTrim(trim: { startMs: number; endMs: number } | null) {
     try {
       await api(`/api/videos/${video.id}`, { method: "PATCH", json: { trim } });
       setVideo((v) => ({ ...v, trim, durationMs: trim ? trim.endMs - trim.startMs : v.originalDurationMs }));
-      setTrimming(false);
+      leaveTrim();
       toast(trim ? "Trim saved — viewers now see the shorter version" : "Trim removed");
     } catch (err) {
       toast((err as Error).message, "error");
@@ -97,13 +108,15 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
     }
   }
 
-  async function update(patch: { title?: string; privacy?: Video["privacy"]; archived?: boolean }, done: string) {
+  async function update(patch: { title?: string; privacy?: Video["privacy"]; archived?: boolean }, done: string): Promise<boolean> {
     try {
       await api(`/api/videos/${video.id}`, { method: "PATCH", json: patch });
       setVideo((v) => ({ ...v, ...patch }));
       toast(done);
+      return true;
     } catch (err) {
       toast((err as Error).message, "error");
+      return false;
     }
   }
 
@@ -124,7 +137,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
           poster={video.thumbUrl}
           totalMs={video.originalDurationMs}
           initial={video.trim}
-          onCancel={() => setTrimming(false)}
+          onCancel={leaveTrim}
           onSave={saveTrim}
         />
       ) : video.status === "ready" && video.videoUrl ? (
@@ -237,7 +250,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
       {!viewerId && (
         <div className="mt-6 flex flex-col items-center gap-4 rounded-2xl border border-line bg-surface p-6 text-center sm:flex-row sm:text-left">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/brand/mascot-512.png" alt="" className="h-16 w-auto" />
+          <img src="/brand/mascot-128.png" alt="" className="h-16 w-auto" />
           <div className="flex-1">
             <p className="font-semibold">Record and share videos like this one</p>
             <p className="text-sm text-ink-3">Recordius is open source and self-hosted: your team’s recordings stay on your own server.</p>
@@ -317,7 +330,7 @@ const FRESH_MS = 10 * 60 * 1000;
  * The title, editable in place by the owner (click, Enter to save, Esc to cancel). Right after a
  * recording, while it still has its default name, the field opens focused so you can just type a name.
  */
-function Title({ video, canEdit, fresh, editing, setEditing, onSave }: { video: Video; canEdit: boolean; fresh: boolean; editing: boolean; setEditing: (v: boolean) => void; onSave: (title: string) => Promise<void> }) {
+function Title({ video, canEdit, fresh, editing, setEditing, onSave }: { video: Video; canEdit: boolean; fresh: boolean; editing: boolean; setEditing: (v: boolean) => void; onSave: (title: string) => Promise<boolean> }) {
   const [prompt, setPrompt] = useState(false);
 
   // Client-only (time and sessionStorage), once per video per tab.
@@ -339,9 +352,10 @@ function Title({ video, canEdit, fresh, editing, setEditing, onSave }: { video: 
         initial={video.title}
         hint={prompt ? "Give your video a name — Enter to save, Esc to keep this one." : "Enter to save · Esc to cancel"}
         onDone={async (next) => {
-          if (next && next !== video.title) await onSave(next);
+          if (next && next !== video.title && !(await onSave(next))) return false; // keep editing what was typed
           setEditing(false);
           setPrompt(false);
+          return true;
         }}
       />
     );
@@ -367,7 +381,7 @@ function Title({ video, canEdit, fresh, editing, setEditing, onSave }: { video: 
 }
 
 /** Mounted fresh for every edit: focused and selected before the first paint, so fast typing isn't lost. */
-function TitleInput({ initial, hint, onDone }: { initial: string; hint: string; onDone: (title: string | null) => Promise<void> }) {
+function TitleInput({ initial, hint, onDone }: { initial: string; hint: string; onDone: (title: string | null) => Promise<boolean> }) {
   const [value, setValue] = useState(initial);
   const input = useRef<HTMLInputElement>(null);
   const finished = useRef(false);
@@ -377,10 +391,13 @@ function TitleInput({ initial, hint, onDone }: { initial: string; hint: string; 
     input.current?.select();
   }, []);
 
-  function finish(title: string | null) {
+  async function finish(title: string | null) {
     if (finished.current) return;
     finished.current = true;
-    onDone(title);
+    if (!(await onDone(title))) {
+      finished.current = false; // the save failed: stay in the field with the text
+      input.current?.focus();
+    }
   }
 
   return (

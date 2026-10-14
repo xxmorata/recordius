@@ -26,6 +26,18 @@ export type UploadGrant =
 
 export type UploadedPart = { partNumber: number; etag: string };
 
+const HOUR = 60 * 60 * 1000;
+/**
+ * Signed read links are made identical within each clock hour (expiry rounded up to the next full hour),
+ * so browsers can cache thumbnails and avatars instead of downloading them again on every page load.
+ * Every link still lives at least `ttlMs`, and at most an hour longer.
+ */
+export function stableWindow(ttlMs: number, now = Date.now()) {
+  const signedAt = Math.floor(now / HOUR) * HOUR;
+  const expiresAt = Math.ceil((now + ttlMs) / HOUR) * HOUR;
+  return { signedAt, expiresAt };
+}
+
 export interface StorageDriver {
   provider: StorageProvider;
   /** Signed, expiring GET URL. `downloadName` makes browsers save the file instead of playing it. */

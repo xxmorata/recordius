@@ -6,7 +6,7 @@ export default function NotFound() {
     <main className="grid min-h-dvh place-items-center px-4 text-center">
       <div className="flex flex-col items-center gap-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/brand/mascot-512.png" alt="" className="h-28 w-auto opacity-90" />
+        <img src="/brand/mascot-256.png" alt="" className="h-28 w-auto opacity-90" />
         <Wordmark className="h-6 text-ink" />
         <div>
           <h1 className="text-xl font-semibold">We couldn’t find that page</h1>

@@ -185,6 +185,44 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
       }
       if (mode === "signin") return await runSignedOut();
       if (mode === "retry") return await runRetry();
+      if (mode === "quit-recording") {
+        // ⌘Q while recording: the recording must be complete on disk and queued for the next start.
+        const library = require("./library");
+        startRecording({ source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false });
+        if ((await until(() => getState() === "recording", 30000)) === null) throw new Error(`recording did not start (state=${getState()})`);
+        const rec = getRec();
+        await wait(5000);
+        app.once("will-quit", () => {
+          const entry = library.pending().find((p) => p.id === rec.video.id);
+          const size = fs.existsSync(rec.localPath) ? fs.statSync(rec.localPath).size : 0;
+          fs.writeFileSync(process.env.RECORDIUS_E2E_OUT, JSON.stringify({ ok: Boolean(entry && size > 0 && entry.durationMs > 3000), id: rec.video.id, queued: Boolean(entry), durationMs: entry?.durationMs, size, localPath: rec.localPath }));
+        });
+        app.quit();
+        return;
+      }
+      if (mode === "source-ended" || mode === "recorder-crash") {
+        // What's being recorded goes away (window closed, display unplugged) — or the capture process dies:
+        // the app must stop by itself, upload what it has and be ready to record again.
+        const api = require("./api");
+        startRecording({ source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false });
+        if ((await until(() => getState() === "recording", 30000)) === null) throw new Error(`recording did not start (state=${getState()})`);
+        const rec = getRec();
+        await wait(mode === "recorder-crash" ? 12000 : 4000); // the MP4 muxer hands over data every few seconds
+        if (mode === "source-ended") await win.recorder.webContents.executeJavaScript(`window.__videoForThumb.getVideoTracks().forEach((t) => t.dispatchEvent(new Event("ended")))`);
+        else win.recorder.webContents.forcefullyCrashRenderer();
+        const back = await until(() => getState() === "idle", 60000);
+        await wait(3000);
+        const video = (await api.recent(5)).videos.find((v) => v.id === rec.video.id);
+        const again = await new Promise((resolve) => {
+          startRecording({ source: "camera", sourceId: null, cameraId: null, micId: null, systemAudio: false, countdown: false });
+          until(() => getState() === "recording", 30000).then((t) => resolve(t !== null));
+        });
+        if (again) {
+          await wait(2000);
+          await stopRecording();
+        }
+        return out({ ok: back !== null && video?.status === "ready" && again, idleAfterMs: back, status: video?.status, size: video?.size ?? null, canRecordAgain: again, localPath: rec.localPath });
+      }
       if (mode === "deeplink") {
         // A website opening recordius:// links must not be able to connect the app or start recording.
         const config = require("./config");

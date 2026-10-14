@@ -169,16 +169,16 @@ export async function revokeInvite(user: CurrentUser, id: string) {
   await sql()`update invites set revoked_at = now() where id = ${id} and workspace_id = ${user.workspace.id}`;
 }
 
-export type InvitePreview = { workspaceName: string; role: Role; invitedBy: string | null };
+export type InvitePreview = { workspaceId: string; workspaceName: string; role: Role; invitedBy: string | null };
 
 export async function previewInvite(token: string): Promise<InvitePreview> {
   const rows = await sql()`
-    select w.name as workspace_name, i.role, u.name as invited_by
+    select w.id as workspace_id, w.name as workspace_name, i.role, u.name as invited_by
     from invites i join workspaces w on w.id = i.workspace_id left join users u on u.id = i.created_by
     where i.token_hash = ${hashToken(token)} and i.revoked_at is null
       and (i.expires_at is null or i.expires_at > now()) and (i.max_uses is null or i.uses < i.max_uses)`;
   if (!rows[0]) throw new HttpError(404, "This invite link is no longer valid");
-  return { workspaceName: rows[0].workspace_name, role: rows[0].role, invitedBy: rows[0].invited_by };
+  return { workspaceId: rows[0].workspace_id, workspaceName: rows[0].workspace_name, role: rows[0].role, invitedBy: rows[0].invited_by };
 }
 
 /** Accepts an invite with a brand-new account. Existing accounts can't join a second workspace (one workspace per account). */

@@ -19,6 +19,8 @@ const TITLES: Record<LibraryScope, { title: string; blurb: string }> = {
   archive: { title: "Archive", blurb: "Archived videos keep their links and can be restored anytime." },
 };
 
+const LIST_LIMIT = 500; // same as listVideos' default on the server
+
 type Sort = "newest" | "oldest" | "views" | "title";
 const SORTS: Record<Sort, string> = { newest: "Newest first", oldest: "Oldest first", views: "Most viewed", title: "Title A–Z" };
 const SORT_KEY = "rcd-library-sort";
@@ -50,15 +52,25 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
 
   useEffect(() => setVideos(initial), [initial]);
 
-  // While something is still uploading, keep the list fresh.
+  // While a recent upload is still in progress, keep the list fresh — every 3 s at first, then every 10 s,
+  // never in a background tab, and not forever (a recording interrupted on someone's Mac can stay
+  // "uploading" for hours until their app retries).
+  const uploading = videos.some((v) => v.status === "recording" && Date.now() - v.createdAt < 3 * 60 * 60 * 1000);
   useEffect(() => {
-    if (!videos.some((v) => v.status === "recording")) return;
-    const t = setInterval(async () => {
-      const r = await api<{ videos: Video[] }>(`/api/videos?scope=${scope}`).catch(() => null);
-      if (r) setVideos(r.videos);
-    }, 3000);
-    return () => clearInterval(t);
-  }, [videos, scope]);
+    if (!uploading) return;
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      if (Date.now() - started > 15 * 60 * 1000) return;
+      if (!document.hidden) {
+        const r = await api<{ videos: Video[] }>(`/api/videos?scope=${scope}`).catch(() => null);
+        if (r) setVideos(r.videos);
+      }
+      timer = setTimeout(tick, Date.now() - started < 60 * 1000 ? 3000 : 10000);
+    };
+    timer = setTimeout(tick, 3000);
+    return () => clearTimeout(timer);
+  }, [uploading, scope]);
 
   useEffect(() => setSort(readSort()), []);
   function changeSort(next: Sort) {
@@ -75,8 +87,20 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
   }, [videos, userId]);
 
   const q = query.trim().toLowerCase();
+  // The page loads the newest LIST_LIMIT videos; with more than that, search asks the server so older ones are found.
+  const capped = videos.length >= LIST_LIMIT;
+  const [remote, setRemote] = useState<Video[] | null>(null);
+  useEffect(() => {
+    if (!capped || !q) return setRemote(null);
+    const t = setTimeout(async () => {
+      const r = await api<{ videos: Video[] }>(`/api/videos?scope=${scope}&q=${encodeURIComponent(q)}`).catch(() => null);
+      if (r) setRemote(r.videos);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [capped, q, scope]);
+
   const shown = useMemo(() => {
-    const list = videos.filter((v) => (!q || v.title.toLowerCase().includes(q)) && (owner === "all" || v.owner.id === owner));
+    const list = (remote ?? videos).filter((v) => (!q || v.title.toLowerCase().includes(q)) && (owner === "all" || v.owner.id === owner));
     const by: Record<Sort, (a: Video, b: Video) => number> = {
       newest: (a, b) => b.createdAt - a.createdAt,
       oldest: (a, b) => a.createdAt - b.createdAt,
@@ -84,7 +108,7 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
       title: (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: "base" }),
     };
     return list.sort(by[sort]);
-  }, [videos, q, owner, sort]);
+  }, [videos, remote, q, owner, sort]);
 
   const isEditable = (v: Video) => v.owner.id === userId || canManageAll;
   // Selection only ever holds videos that are on screen and editable.
@@ -145,15 +169,19 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
     setSharing((s) => (s && s.id === id ? { ...s, ...patch } : s));
   }
 
-  async function update(v: Video, patch: { title?: string; privacy?: Video["privacy"]; archived?: boolean }, done: string) {
+  /** Saves a change; returns false (and says why) when the server refused it. */
+  async function update(v: Video, patch: { title?: string; privacy?: Video["privacy"]; archived?: boolean }, done: string): Promise<boolean> {
     try {
       await api(`/api/videos/${v.id}`, { method: "PATCH", json: patch });
       if (patch.archived !== undefined) setVideos((all) => all.filter((x) => x.id !== v.id));
       else patchLocal(v.id, patch);
       toast(done);
-      router.refresh();
+      // Only archive/privacy change the sidebar counts; a rename is already shown locally.
+      if (patch.archived !== undefined || patch.privacy !== undefined) router.refresh();
+      return true;
     } catch (err) {
       toast((err as Error).message, "error");
+      return false;
     }
   }
 
@@ -229,7 +257,9 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
               </option>
             ))}
           </Select>
-          <p className="shrink-0 pl-1 text-sm text-ink-3">{pluralize(shown.length, "video")}</p>
+          <p className="shrink-0 pl-1 text-sm text-ink-3" title={capped && !q ? "Only the newest videos are listed — search to find older ones" : undefined}>
+            {capped && !q ? `Newest ${LIST_LIMIT} videos` : pluralize(shown.length, "video")}
+          </p>
         </div>
       </div>
 
@@ -289,7 +319,7 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
                 >
                   {v.thumbUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={v.thumbUrl} alt="" className="size-full object-cover transition group-hover:scale-[1.02]" />
+                    <img src={v.thumbUrl} alt="" loading="lazy" decoding="async" className="size-full object-cover transition group-hover:scale-[1.02]" />
                   ) : (
                     <div className="grid size-full place-items-center text-white/30">
                       <VideoIcon className="size-8" />
@@ -355,7 +385,7 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
                     items={[
                       { label: "Copy link", icon: <Link2 />, onSelect: () => copyLink(v) },
                       { label: "Share…", icon: <Share2 />, onSelect: () => setSharing(v) },
-                      ...(v.downloadUrl ? [{ label: "Download", icon: <Download />, onSelect: () => window.open(v.downloadUrl!, "_blank") }] : []),
+                      ...(v.canDownload ? [{ label: "Download", icon: <Download />, onSelect: () => window.open(`/api/videos/${v.id}/download`, "_blank") }] : []),
                       ...(editable
                         ? ([
                             "separator",
@@ -445,8 +475,7 @@ export function LibraryView({ initial, scope, origin, userId, canManageAll }: Pr
           title={renaming.title}
           onClose={() => setRenaming(null)}
           onSave={async (title) => {
-            await update(renaming, { title }, "Title updated");
-            setRenaming(null);
+            if (await update(renaming, { title }, "Title updated")) setRenaming(null); // keep the dialog (and text) on failure
           }}
         />
       )}

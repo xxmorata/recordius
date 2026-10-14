@@ -166,9 +166,13 @@ async function prepare(settings) {
 
   recorder.ondataavailable = (e) => {
     if (discard || !e.data.size) return;
-    // Keep chunks strictly ordered: arrayBuffer() is async.
-    chunkChain = chunkChain.then(async () => window.recordius.send("rec:chunk", await e.data.arrayBuffer()));
+    // Keep chunks strictly ordered: arrayBuffer() is async. One failed chunk must never break the chain
+    // (that would drop every later chunk and the "stopped" message).
+    chunkChain = chunkChain.then(async () => window.recordius.send("rec:chunk", await e.data.arrayBuffer())).catch(() => {});
   };
+  recorder.onerror = (e) => window.recordius.send("rec:failed", e.error?.message ?? "the recorder stopped unexpectedly");
+  // The recorded window was closed, or the display unplugged: stop cleanly and keep what's there.
+  for (const t of combined.getVideoTracks()) t.addEventListener("ended", () => recorder?.state !== "inactive" && window.recordius.send("rec:source-ended"));
   recorder.onstop = () => {
     chunkChain.then(() => {
       stopStreams();

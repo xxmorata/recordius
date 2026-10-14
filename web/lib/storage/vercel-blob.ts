@@ -1,5 +1,5 @@
 import { del, issueSignedToken, list, presignUrl, put, type IssuedSignedToken } from "@vercel/blob";
-import type { StorageDriver } from "./types";
+import { stableWindow, type StorageDriver } from "./types";
 
 /* A PRIVATE Vercel Blob store. The desktop app and the browser upload with client tokens scoped to one
  * video's own files (see uploadGrant in ../blob.ts); reads are presigned from one store-wide delegation. */
@@ -39,7 +39,7 @@ export const vercelBlob: StorageDriver = {
       access: "private",
       operation: "get",
       pathname,
-      validUntil: Math.min(Date.now() + ttlMs, delegation.validUntil),
+      validUntil: Math.min(stableWindow(ttlMs).expiresAt, delegation.validUntil),
     });
     return downloadName ? `${presignedUrl}${presignedUrl.includes("?") ? "&" : "?"}download=1` : presignedUrl;
   },

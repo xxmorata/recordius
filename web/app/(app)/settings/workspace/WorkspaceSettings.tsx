@@ -27,6 +27,7 @@ export function WorkspaceSettings({ workspace, members, invites: initialInvites,
   const [saving, setSaving] = useState(false);
   const [invites, setInvites] = useState(initialInvites);
   const [newInvite, setNewInvite] = useState<string | null>(null);
+  const [newInviteId, setNewInviteId] = useState<string | null>(null);
   const [inviteRole, setInviteRole] = useState<"member" | "admin">("member");
   const [creating, setCreating] = useState(false);
   const [resetLink, setResetLink] = useState<{ name: string; url: string } | null>(null);
@@ -58,7 +59,9 @@ export function WorkspaceSettings({ workspace, members, invites: initialInvites,
     try {
       const r = await api<{ id: string; url: string }>("/api/workspace/invites", { method: "POST", json: { role: inviteRole, expiresInDays: 14 } });
       setNewInvite(r.url);
-      await copy(r.url, "new");
+      setNewInviteId(r.id);
+      // Safari may refuse the clipboard after the request; the link is shown either way.
+      await copy(r.url, "new").catch(() => {});
       const list = await api<{ invites: Invite[] }>("/api/workspace/invites");
       setInvites(list.invites);
     } catch (err) {
@@ -69,9 +72,14 @@ export function WorkspaceSettings({ workspace, members, invites: initialInvites,
   }
 
   async function revoke(id: string) {
-    await api(`/api/workspace/invites/${id}`, { method: "DELETE" }).catch((err) => toast(err.message, "error"));
+    try {
+      await api(`/api/workspace/invites/${id}`, { method: "DELETE" });
+    } catch (err) {
+      return toast((err as Error).message, "error"); // still valid: keep it in the list
+    }
     setInvites((all) => all.filter((i) => i.id !== id));
-    if (newInvite) setNewInvite(null);
+    if (id === newInviteId) setNewInvite(null);
+    toast("Invite link revoked");
   }
 
   async function setRole(m: Member, role: Role) {

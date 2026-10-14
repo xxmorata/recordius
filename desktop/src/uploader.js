@@ -114,17 +114,24 @@ function partsTarget(grant, videoId, uploadApi) {
       let done = 0;
       const fd = fs.openSync(localPath, "r");
       try {
+        let stop = false;
         const worker = async () => {
-          for (let i = next++; i < count; i = next++) {
+          for (let i = next++; i < count && !stop; i = next++) {
             const length = Math.min(target.partSize, size - i * target.partSize);
             const buf = Buffer.alloc(Math.max(0, length));
             fs.readSync(fd, buf, 0, buf.length, i * target.partSize);
-            parts[i] = await withRetry(`part ${i + 1}`, () => target.uploadPart(mpu, i + 1, buf));
+            parts[i] = await withRetry(`part ${i + 1}`, () => target.uploadPart(mpu, i + 1, buf)).catch((err) => {
+              stop = true;
+              throw err;
+            });
             done += buf.length;
             onProgress?.((done / (size || 1)) * 100);
           }
         };
-        await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, count) }, worker));
+        // Let every worker finish before closing the file (a sibling may still be reading).
+        const results = await Promise.allSettled(Array.from({ length: Math.min(MAX_PARALLEL, count) }, worker));
+        const failed = results.find((r) => r.status === "rejected");
+        if (failed) throw failed.reason;
       } finally {
         fs.closeSync(fd);
       }
@@ -149,9 +156,16 @@ function etagOf(res) {
  * MediaRecorder chunks are written to a local file (recovery copy) and also packed into
  * fixed-size multipart parts that are uploaded immediately. Stopping only flushes the tail.
  *
- * If the live upload breaks (offline, token problems), recording continues locally and
- * finish() falls back to uploading the whole local file.
+ * Built for long recordings on bad networks:
+ *  - while recording, a failing part is retried with backoff (up to a minute apart) instead of giving up;
+ *  - at most MAX_QUEUED_BYTES of not-yet-uploaded parts stay in memory — later parts are read back
+ *    from the local file when their turn comes, so a slow uplink can't grow memory without limit;
+ *  - if the live upload still can't finish, finish() uploads the whole local file instead.
  */
+const MAX_QUEUED_BYTES = 64 * 1024 * 1024;
+const LIVE_RETRY_MAX_DELAY = 60000;
+const FINISH_ATTEMPTS = 6;
+
 class LiveUploader {
   constructor({ target, contentType, localPath }) {
     this.target = target;
@@ -159,23 +173,37 @@ class LiveUploader {
     this.contentType = contentType;
     this.localPath = localPath;
     this.file = fs.createWriteStream(localPath);
+    this.fileError = null;
+    // Disk full / volume gone: never crash the app; the live upload carries on without the local copy.
+    this.file.on("error", (err) => {
+      this.fileError = err;
+      console.error("[uploader] local copy failed:", err.message);
+    });
     this.pending = [];
     this.pendingBytes = 0;
     this.totalBytes = 0;
     this.nextPart = 1;
+    this.nextStart = 0;
     this.parts = [];
     this.inflight = new Set();
     this.queue = [];
+    this.queuedBytes = 0;
     this.live = true;
     this.liveError = null;
+    this.finishing = false;
     this.ready = this.#init();
   }
 
   async #init() {
-    try {
-      this.mpu = await withRetry("create multipart upload", () => this.target.create(this.contentType), 3);
-    } catch (err) {
-      this.#goOffline(err);
+    for (let attempt = 1, delay = 1000; ; attempt++) {
+      try {
+        this.mpu = await this.target.create(this.contentType);
+        return;
+      } catch (err) {
+        if (err.fatal || (this.finishing && attempt >= 3) || !this.live) return this.#goOffline(err);
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, LIVE_RETRY_MAX_DELAY);
+      }
     }
   }
 
@@ -183,11 +211,13 @@ class LiveUploader {
     if (!this.live) return;
     this.live = false;
     this.liveError = err;
+    this.queue = [];
+    this.queuedBytes = 0;
     console.warn(`[uploader] live upload disabled, will upload local file at the end: ${err.message}`);
   }
 
   push(buf) {
-    this.file.write(buf);
+    if (!this.fileError) this.file.write(buf);
     this.totalBytes += buf.length;
     if (!this.live) return;
     this.pending.push(buf);
@@ -205,20 +235,58 @@ class LiveUploader {
   }
 
   #enqueue(body) {
-    this.queue.push({ partNumber: this.nextPart++, body });
+    const job = { partNumber: this.nextPart++, start: this.nextStart, length: body.length, body };
+    this.nextStart += body.length;
+    // Keep only a bounded amount in memory; the rest is read back from the local file later.
+    if (this.queuedBytes + body.length > MAX_QUEUED_BYTES && !this.fileError) job.body = null;
+    else this.queuedBytes += body.length;
+    this.queue.push(job);
     this.#pump();
+  }
+
+  /** A part that was dropped from memory, read back from the local file once it has been written. */
+  async #readPart(job) {
+    while (this.file.bytesWritten < job.start + job.length) {
+      if (this.fileError) throw Object.assign(new Error("the local copy is unavailable"), { fatal: true });
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const fd = await fs.promises.open(this.localPath, "r");
+    try {
+      const buf = Buffer.alloc(job.length);
+      await fd.read(buf, 0, job.length, job.start);
+      return buf;
+    } finally {
+      await fd.close();
+    }
+  }
+
+  async #upload(job) {
+    await this.ready;
+    if (!this.live) return;
+    const body = job.body ?? (await this.#readPart(job));
+    for (let attempt = 1, delay = 1000; this.live; attempt++) {
+      try {
+        this.parts.push(await this.target.uploadPart(this.mpu, job.partNumber, body, this.contentType));
+        return;
+      } catch (err) {
+        // While recording there's time: keep trying (the network may be back in a minute). Once the user
+        // stopped, give up after a few tries and upload the local file instead.
+        if (err.fatal || (this.finishing && attempt >= FINISH_ATTEMPTS)) throw err;
+        console.warn(`[uploader] part ${job.partNumber} failed (attempt ${attempt}): ${err.message}`);
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, this.finishing ? 8000 : LIVE_RETRY_MAX_DELAY);
+      }
+    }
   }
 
   #pump() {
     while (this.live && this.inflight.size < MAX_PARALLEL && this.queue.length) {
       const job = this.queue.shift();
-      const p = this.ready
-        .then(() => {
-          if (!this.live) return;
-          return withRetry(`part ${job.partNumber}`, () => this.target.uploadPart(this.mpu, job.partNumber, job.body, this.contentType)).then((part) => this.parts.push(part));
-        })
+      const p = this.#upload(job)
         .catch((err) => this.#goOffline(err))
         .finally(() => {
+          if (job.body) this.queuedBytes -= job.length;
+          job.body = null;
           this.inflight.delete(p);
           this.#pump();
         });
@@ -238,16 +306,29 @@ class LiveUploader {
   }
 
   async finish(onProgress) {
-    await new Promise((resolve, reject) => this.file.end((err) => (err ? reject(err) : resolve())));
+    this.finishing = true;
+    await new Promise((resolve) => {
+      if (this.fileError || this.file.destroyed) return resolve();
+      this.file.end(() => resolve());
+    });
     await this.ready;
     if (this.live && this.pendingBytes > 0) this.#enqueue(this.#take(this.pendingBytes));
     await this.#drain();
 
-    if (this.live && this.parts.length) {
+    if (this.live && this.parts.length && this.parts.length === this.nextPart - 1) {
       const parts = [...this.parts].sort((a, b) => a.partNumber - b.partNumber);
       return withRetry("complete multipart upload", () => this.target.complete(this.mpu, parts, this.contentType));
     }
+    if (this.fileError) throw new Error(`The live upload didn't finish and the local copy couldn't be written (${this.fileError.message})`);
     return this.uploadLocalFile(onProgress);
+  }
+
+  /** Flushes and closes the local copy (quitting mid-recording). */
+  closeFile() {
+    return new Promise((resolve) => {
+      if (this.fileError || this.file.destroyed || this.file.writableEnded) return resolve();
+      this.file.end(() => resolve());
+    });
   }
 
   /** Fallback / recovery path: upload the whole local recording. */

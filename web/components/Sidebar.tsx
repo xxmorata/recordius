@@ -98,7 +98,7 @@ export function Sidebar({ user, workspace, counts }: Props) {
         <Link href="/download" onClick={() => setOpen(false)} className="card block p-3.5 transition hover:shadow-[var(--shadow-pop)]">
           <div className="flex items-center gap-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/brand/mascot-512.png" alt="" className="h-11 w-auto" />
+            <img src="/brand/mascot-128.png" alt="" className="h-11 w-auto" />
             <div className="min-w-0">
               <p className="text-sm font-semibold">Recordius for Mac</p>
               <p className="text-xs text-ink-3">Record with one shortcut</p>

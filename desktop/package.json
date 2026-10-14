@@ -1,7 +1,7 @@
 {
   "name": "recordius",
   "productName": "Recordius",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Record your screen and camera, share a link in seconds. Your videos, your server.",
   "main": "launcher/index.js",
   "private": true,
@@ -11,7 +11,7 @@
     "start": "electron .",
     "package": "node scripts/package.mjs",
     "release-assets": "node scripts/package.mjs --release",
-    "test": "node scripts/test-library.mjs",
+    "test": "node scripts/test-library.mjs && node scripts/test-uploader.mjs",
     "test:e2e": "RECORDIUS_E2E=cam:6000 RECORDIUS_E2E_FAKE=1 electron ."
   },
   "dependencies": {

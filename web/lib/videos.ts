@@ -74,13 +74,28 @@ const VIDEO_SELECT = `
  * @param canDownloadFull  the owner/admins: a download link even when a trim hides parts in the player
  * @param inWorkspace      people with account-level access see the owner's email; link viewers only the name
  */
-async function toVideo(row: VideoRow, withUrls: boolean, { canDownloadFull, inWorkspace }: { canDownloadFull: boolean; inWorkspace: boolean }): Promise<Video> {
+/**
+ * @param list  library/recent lists: only the thumbnail and avatar are signed (the player and download links
+ *              are fetched when a video is opened), and avatars are signed once per list via `avatarCache`.
+ */
+async function toVideo(
+  row: VideoRow,
+  withUrls: boolean,
+  { canDownloadFull, inWorkspace, list = false, avatarCache }: { canDownloadFull: boolean; inWorkspace: boolean; list?: boolean; avatarCache?: Map<string, Promise<string>> },
+): Promise<Video> {
   const ready = row.status === "ready";
+  const signAvatar = (p: string) => {
+    if (!avatarCache) return viewUrl(p);
+    if (!avatarCache.has(p)) avatarCache.set(p, viewUrl(p));
+    return avatarCache.get(p)!;
+  };
   const [videoUrl, thumbUrl, avatarUrl] = await Promise.all([
-    withUrls && ready ? viewUrl(videoPath(row.id, row.secret, row.ext)) : null,
+    withUrls && ready && !list ? viewUrl(videoPath(row.id, row.secret, row.ext)) : null,
     withUrls && (row.thumb_path || row.has_thumb) ? viewUrl(row.thumb_path ?? thumbPath(row.id, row.secret)) : null,
-    row.owner_avatar ? viewUrl(row.owner_avatar) : null,
+    row.owner_avatar ? signAvatar(row.owner_avatar) : null,
   ]);
+  // A trim hides parts in the player; don't hand viewers a one-click download of the uncut file.
+  const canDownload = withUrls && ready && (canDownloadFull || !trimOf(row));
   return {
     id: row.id,
     title: row.title,
@@ -98,8 +113,8 @@ async function toVideo(row: VideoRow, withUrls: boolean, { canDownloadFull, inWo
     archived: row.archived_at !== null,
     owner: { id: row.owner_id, name: row.owner_name, email: inWorkspace ? row.owner_email : "", avatarUrl },
     videoUrl,
-    // A trim hides parts in the player; don't hand viewers a one-click download of the uncut file.
-    downloadUrl: videoUrl && (canDownloadFull || !trimOf(row)) ? await downloadUrl(videoPath(row.id, row.secret, row.ext), downloadName(row.title, row.ext)) : null,
+    downloadUrl: canDownload && !list ? await downloadUrl(videoPath(row.id, row.secret, row.ext), downloadName(row.title, row.ext)) : null,
+    canDownload,
     thumbUrl,
   };
 }
@@ -235,7 +250,8 @@ export async function listVideos(user: CurrentUser, scope: LibraryScope, query =
     where += ` and v.title ilike $${params.length}`;
   }
   const rows = await sql().unsafe<VideoRow[]>(`${VIDEO_SELECT} where ${where} order by v.created_at desc limit ${Math.max(1, Math.min(500, Math.floor(limit) || 500))}`, params);
-  return Promise.all(rows.map((r) => toVideo(r, true, { canDownloadFull: r.owner_id === user.id || canManageWorkspace(user), inWorkspace: true })));
+  const avatarCache = new Map<string, Promise<string>>();
+  return Promise.all(rows.map((r) => toVideo(r, true, { canDownloadFull: r.owner_id === user.id || canManageWorkspace(user), inWorkspace: true, list: true, avatarCache })));
 }
 
 export async function countVideos(user: CurrentUser): Promise<{ mine: number; workspace: number; archive: number }> {
@@ -264,7 +280,8 @@ export async function createVideo(user: CurrentUser, title: string, mimeType: st
 export async function completeVideo(id: string, user: CurrentUser, durationMs: number, size: number) {
   const row = await requireOwned(id, user);
   // Never mark a video ready whose file isn't there: the share page would show a broken player.
-  if (!(await fileExists(videoPath(row.id, row.secret, row.ext)))) throw new HttpError(409, "The video file hasn't finished uploading yet", "file_missing");
+  // An empty file isn't a video either: the share page would show a broken player.
+  if (!((await fileSize(videoPath(row.id, row.secret, row.ext))) ?? 0)) throw new HttpError(409, "The video file hasn't finished uploading yet", "file_missing");
   const hasThumb = await thumbExists(row);
   await sql()`update videos set status = 'ready', duration_ms = ${Math.round(durationMs)}, size_bytes = ${Math.round(size)},
     has_thumb = ${hasThumb}, completed_at = now() where id = ${id}`;
@@ -408,7 +425,9 @@ export async function updateVideo(id: string, user: CurrentUser, patch: VideoPat
     if (patch.linkPassword === null || patch.linkPassword === "") await db`update videos set link_password_hash = null where id = ${id}`;
     else {
       if (patch.linkPassword.length < 6) throw new HttpError(400, "Use a password of at least 6 characters");
-      await db`update videos set link_password_hash = ${await hashPassword(patch.linkPassword.slice(0, 200))} where id = ${id}`;
+      // Rejected rather than cut: a silently shortened password could never be typed back in.
+      if (patch.linkPassword.length > 200) throw new HttpError(400, "Use a password of at most 200 characters");
+      await db`update videos set link_password_hash = ${await hashPassword(patch.linkPassword)} where id = ${id}`;
     }
   }
   if (patch.linkExpiresAt !== undefined) {
@@ -511,8 +530,15 @@ export async function viewerStats(id: string, user: CurrentUser): Promise<Viewer
   return { viewers, anonymous: { count: anon.length, avgPercent: avg }, total: rows.length };
 }
 
+declare global {
+  var __recordiusStaleCheck: number | undefined;
+}
+
 export async function failStaleRecordings() {
   // Recordings whose desktop app never finished (crash, quit) are marked failed after a day.
+  // Piggy-backed on library loads, so at most every 10 minutes per server.
+  if (Date.now() - (globalThis.__recordiusStaleCheck ?? 0) < 10 * 60 * 1000) return;
+  globalThis.__recordiusStaleCheck = Date.now();
   await sql()`update videos set status = 'failed' where status = 'recording' and created_at < now() - interval '1 day'`;
 }
 
@@ -557,8 +583,19 @@ async function commentAccess(id: string, user: CurrentUser | null) {
   return { row, access };
 }
 
+/**
+ * Comment timestamps are stored on the FILE timeline, so they keep pointing at the same moment when the
+ * owner changes the trim; they're shown on the trimmed timeline (a comment in a cut part shows no time).
+ */
 export async function listComments(id: string, user: CurrentUser | null): Promise<Comment[]> {
-  const { access } = await commentAccess(id, user);
+  const { access, row } = await commentAccess(id, user);
+  const trim = trimOf(row);
+  const toTimeline = (fileMs: number | null) => {
+    if (fileMs == null) return null;
+    if (!trim) return fileMs;
+    return fileMs < trim.startMs || fileMs > trim.endMs ? null : fileMs - trim.startMs;
+  };
+  const avatars = new Map<string, Promise<string>>(); // one signed URL per author, not per comment
   const rows = await sql()`
     select c.id, c.body, c.at_ms, c.created_at, u.id as user_id, u.name, u.avatar_path
     from video_comments c join users u on u.id = c.user_id
@@ -567,9 +604,13 @@ export async function listComments(id: string, user: CurrentUser | null): Promis
     rows.map(async (r) => ({
       id: r.id as string,
       body: r.body as string,
-      atMs: r.at_ms as number | null,
+      atMs: toTimeline(r.at_ms as number | null),
       createdAt: new Date(r.created_at).getTime(),
-      author: { id: r.user_id as string, name: r.name as string, avatarUrl: r.avatar_path ? await viewUrl(r.avatar_path) : null },
+      author: {
+        id: r.user_id as string,
+        name: r.name as string,
+        avatarUrl: r.avatar_path ? await (avatars.get(r.avatar_path) ?? avatars.set(r.avatar_path, viewUrl(r.avatar_path)).get(r.avatar_path)!) : null,
+      },
       canDelete: r.user_id === user!.id || access === "owner",
     })),
   );
@@ -580,8 +621,10 @@ export async function addComment(id: string, user: CurrentUser | null, body: str
   const text = body.trim();
   if (!text) throw new HttpError(400, "Write something first");
   if (text.length > 4000) throw new HttpError(400, "Comments can be up to 4000 characters");
-  const length = (trimOf(row) ? trimOf(row)!.endMs - trimOf(row)!.startMs : row.duration_ms) ?? 0;
-  const at = atMs == null || !Number.isFinite(atMs) ? null : Math.max(0, Math.min(Math.round(atMs), length));
+  // atMs comes from the player (trimmed timeline); it's stored as a position in the file.
+  const trim = trimOf(row);
+  const length = (trim ? trim.endMs - trim.startMs : row.duration_ms) ?? 0;
+  const at = atMs == null || !Number.isFinite(atMs) ? null : Math.max(0, Math.min(Math.round(atMs), length)) + (trim?.startMs ?? 0);
   const [c] = await sql()`insert into video_comments (video_id, user_id, body, at_ms) values (${id}, ${user!.id}, ${text}, ${at}) returning id`;
   return c.id as string;
 }

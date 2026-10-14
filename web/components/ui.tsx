@@ -112,7 +112,7 @@ export function Avatar({ name, url, size = 32, className }: { name: string; url?
   const color = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   return url ? (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={url} alt="" width={size} height={size} className={cx("shrink-0 rounded-full object-cover", className)} style={{ width: size, height: size }} />
+    <img src={url} alt="" width={size} height={size} loading="lazy" decoding="async" className={cx("shrink-0 rounded-full object-cover", className)} style={{ width: size, height: size }} />
   ) : (
     <span
       className={cx("inline-grid shrink-0 place-items-center rounded-full font-semibold text-white", className)}

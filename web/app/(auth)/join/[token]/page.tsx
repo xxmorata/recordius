@@ -29,7 +29,7 @@ export default async function Join({ params }: { params: Promise<{ token: string
     );
   }
   if (user) {
-    if (user.workspace.name === invite.workspaceName) redirect("/library");
+    if (user.workspace.id === invite.workspaceId) redirect("/library"); // already in this workspace
     return (
       <>
         <h1 className="text-xl font-semibold">You’re signed in as {user.email}</h1>

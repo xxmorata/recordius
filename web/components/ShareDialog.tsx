@@ -219,7 +219,7 @@ function LinkSettings({ video, onChange }: { video: Video; onChange: (patch: Par
             }
           }}
         >
-          <Input type="text" placeholder={video.link.hasPassword ? "New password (6+ characters)" : "Choose a password (6+ characters)"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" minLength={6} />
+          <Input type="text" placeholder={video.link.hasPassword ? "New password (6+ characters)" : "Choose a password (6+ characters)"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" minLength={6} maxLength={200} />
           <Button type="submit" variant="secondary" loading={busy} disabled={password.length < 6}>
             {video.link.hasPassword ? "Change" : "Set"}
           </Button>

@@ -15,7 +15,7 @@ export default async function Download() {
       <div className="card overflow-hidden">
         <div className="flex flex-col items-center gap-6 bg-gradient-to-br from-[#f6f4ff] to-[#fff0f0] px-6 py-10 text-center sm:flex-row sm:text-left">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/brand/mascot-512.png" alt="" className="h-32 w-auto drop-shadow-xl" />
+          <img src="/brand/mascot-256.png" alt="" className="h-32 w-auto drop-shadow-xl" />
           <div>
             <h1 className="text-[26px] font-semibold tracking-tight">Recordius for Mac</h1>
             <p className="mt-2 text-ink-2">

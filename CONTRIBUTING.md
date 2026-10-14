@@ -35,7 +35,8 @@ A Postgres in Docker, if you need one: `docker run -d --name rcd-pg -e POSTGRES_
 | Web API, end to end (~180 checks) | `cd web && npm test` | against a running server; **needs an empty database** (it starts at `/setup`). `BASE=http://localhost:3100` to target another instance. Run it once per storage provider you touch (local, S3 — e.g. MinIO — and Vercel Blob); the suite adapts to whichever the server uses. |
 | Desktop: panel UI | `cd desktop && RECORDIUS_USER_DATA=/tmp/rcd RECORDIUS_E2E=ui RECORDIUS_E2E_FAKE=1 RECORDIUS_E2E_CONNECT="http://localhost:3000 <device token>" npx electron .` | device token: web → Get the app → Connect desktop app → *Paste a connection code* value |
 | Desktop: record → upload → ready | `RECORDIUS_E2E=cam:6000 RECORDIUS_E2E_FAKE=1 …` | fake camera/mic; `screen` / `screen-cam` need the Screen Recording permission |
-| Desktop: upload queue & local-copy cleanup | `cd desktop && npm test` | plain Node, no Electron or server needed; runs in CI |
+| Desktop: upload queue, local-copy cleanup, live uploader | `cd desktop && npm test` | plain Node, no Electron or server needed; runs in CI. The uploader test simulates network outages, a slow uplink (memory cap) and disk errors |
+| Desktop: crashes and interruptions | `RECORDIUS_E2E=source-ended`, `recorder-crash`, `quit-recording` … | the recorded window disappears; the capture process crashes; ⌘Q mid-recording (then start the app again with `RECORDIUS_E2E_RETRY=1` to see it upload) |
 | Desktop: failed upload → retry | `RECORDIUS_E2E=retry RECORDIUS_E2E_FAKE=1 RECORDIUS_E2E_CONNECT=… npx electron .` | queues a "failed" recording, a deleted one and a missing file, then checks the banner and the retry |
 | Desktop: quitting really quits | `RECORDIUS_E2E=quit …` | fails if any window blocks ⌘Q / shutdown |
 | Desktop: in-app update | `RECORDIUS_E2E=update RECORDIUS_UPDATE_URL=http://127.0.0.1:8787/latest.json …` | serve a fake release JSON + tarball locally |

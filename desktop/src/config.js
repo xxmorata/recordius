@@ -34,15 +34,22 @@ function readJson(file) {
   }
 }
 
+// Kept in memory: only this process writes these files, and reading them on every API call and timer
+// tick is wasted work on the main thread.
+let cached = null;
+let cachedToken; // undefined = not read yet
+
 function load() {
-  return { ...DEFAULTS, ...readJson(CONFIG_FILE) };
+  cached ??= { ...DEFAULTS, ...readJson(CONFIG_FILE) };
+  return { ...cached };
 }
 
 function save(patch) {
   const next = { ...load(), ...patch };
   fs.mkdirSync(DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
-  return next;
+  cached = next;
+  return { ...next };
 }
 
 /**
@@ -51,20 +58,24 @@ function save(patch) {
  * macOS ask for the login password on first use — a dead end for people installing the app.
  */
 function token() {
+  if (cachedToken !== undefined) return cachedToken;
   try {
-    return fs.readFileSync(TOKEN_FILE, "utf8").trim() || null;
+    cachedToken = fs.readFileSync(TOKEN_FILE, "utf8").trim() || null;
   } catch {
-    return null;
+    cachedToken = null;
   }
+  return cachedToken;
 }
 
 function saveToken(value) {
   fs.mkdirSync(DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(TOKEN_FILE, value, { mode: 0o600 });
+  cachedToken = value;
 }
 
 function clearToken() {
   fs.rmSync(TOKEN_FILE, { force: true });
+  cachedToken = null;
 }
 
 function isConnected() {

@@ -298,6 +298,9 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
           const len = (trim ? Math.min(trim.endMs / 1000, v.duration) : v.duration) - b;
           const offset = startAt != null && startAt > 0 && startAt < len ? startAt : 0;
           if (b + offset > 0) v.currentTime = b + offset;
+          // Tell the page where we start (timestamped comments, "copy link at…") before any playback.
+          setTime(offset);
+          onTime?.(offset);
         }}
         onDurationChange={(e) => setFileDuration(e.currentTarget.duration)}
         onTimeUpdate={(e) => {

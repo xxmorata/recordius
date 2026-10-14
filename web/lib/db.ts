@@ -56,7 +56,15 @@ export async function migrate(): Promise<string[]> {
 }
 
 /** True once the schema exists (used by /setup to decide whether to run migrations). */
+declare global {
+  var __recordiusSchemaReady: boolean | undefined;
+}
+
 export async function schemaReady(): Promise<boolean> {
+  // Once the schema exists it doesn't go away while this server runs: remember it (one query saved per page).
+  if (globalThis.__recordiusSchemaReady) return true;
   const rows = await sql()`select to_regclass('public.users') as t`;
-  return rows[0]?.t !== null;
+  const ready = rows[0]?.t !== null;
+  if (ready) globalThis.__recordiusSchemaReady = true;
+  return ready;
 }

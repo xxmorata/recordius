@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { appUrl, authSecret } from "../env";
-import type { StorageDriver } from "./types";
+import { stableWindow, type StorageDriver } from "./types";
 
 /*
  * Files on this server's own disk (a Docker volume, a VPS folder). Nothing is served from the folder
@@ -161,7 +161,7 @@ export const local: StorageDriver = {
   provider: "local",
   async viewUrl(pathname, ttlMs, downloadName) {
     fileFor(pathname);
-    const e = String(Date.now() + ttlMs);
+    const e = String(stableWindow(ttlMs).expiresAt);
     const dl = downloadName ?? "";
     return signedUrl("/api/storage/file", { p: pathname, e, ...(dl ? { dl } : {}) }, ["get", pathname, dl, e]);
   },

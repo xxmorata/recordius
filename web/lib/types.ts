@@ -35,6 +35,8 @@ export type Video = {
   owner: { id: string; name: string; email: string; avatarUrl: string | null };
   videoUrl: string | null;
   downloadUrl: string | null;
+  /** Whether this viewer may download the file (lists leave downloadUrl empty and use /api/videos/:id/download). */
+  canDownload: boolean;
   thumbUrl: string | null;
 };
 
