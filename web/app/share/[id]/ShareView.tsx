@@ -147,6 +147,7 @@ export function ShareView({ initial, access, shareUrl, viewerId }: Props) {
           src={video.videoUrl}
           poster={video.thumbUrl}
           trim={video.trim}
+          knownDurationMs={video.originalDurationMs}
           startAt={startAt}
           autoPlay={!own}
           onTime={(s) => {

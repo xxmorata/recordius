@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const http = require("./http");
+const mp4 = require("./mp4-index");
 const { createMultipartUpload, uploadPart, completeMultipartUpload, put } = require("@vercel/blob/client");
 
 const MAX_PARALLEL = 3;
@@ -192,6 +193,11 @@ class LiveUploader {
     this.live = true;
     this.liveError = null;
     this.finishing = false;
+    // MP4: the first part (with the header) is uploaded last, once the real duration and the seek index can be
+    // written into the file (see mp4-index.js). Everything after it still uploads live while recording.
+    this.indexMp4 = contentType === "video/mp4";
+    this.firstJob = null;
+    this.indexed = null;
     this.ready = this.#init();
   }
 
@@ -235,11 +241,16 @@ class LiveUploader {
     return part;
   }
 
-  #enqueue(body) {
+  #enqueue(body, { keep = false } = {}) {
     const job = { partNumber: this.nextPart++, start: this.nextStart, length: body.length, body };
     this.nextStart += body.length;
-    // Keep only a bounded amount in memory; the rest is read back from the local file later.
-    if (this.queuedBytes + body.length > MAX_QUEUED_BYTES && !this.fileError) job.body = null;
+    if (job.partNumber === 1 && this.indexMp4 && !this.finishing) {
+      this.firstJob = job; // held in memory until finish()
+      return;
+    }
+    // Keep only a bounded amount in memory; the rest is read back from the local file later
+    // (never a part whose bytes differ from the file, like the indexed last part).
+    if (!keep && this.queuedBytes + body.length > MAX_QUEUED_BYTES && !this.fileError) job.body = null;
     else this.queuedBytes += body.length;
     this.queue.push(job);
     this.#pump();
@@ -313,15 +324,57 @@ class LiveUploader {
       this.file.end(() => resolve());
     });
     await this.ready;
-    if (this.live && this.pendingBytes > 0) this.#enqueue(this.#take(this.pendingBytes));
+    const plan = this.#indexPlan();
+    if (this.live) {
+      let last = this.pendingBytes > 0 ? this.#take(this.pendingBytes) : Buffer.alloc(0);
+      if (this.firstJob) {
+        const job = this.firstJob;
+        if (plan) job.body = Buffer.concat([plan.header, job.body.subarray(plan.headerEnd)]);
+        job.length = job.body.length;
+        this.queuedBytes += job.length;
+        this.queue.unshift(job);
+        if (plan) last = Buffer.concat([last, plan.tail]);
+      } else if (plan) {
+        last = Buffer.concat([plan.header, last.subarray(plan.headerEnd), plan.tail]); // the whole recording is one part
+      }
+      this.firstJob = null;
+      if (last.length) this.#enqueue(last, { keep: Boolean(plan) });
+      else this.#pump();
+    }
     await this.#drain();
+    // The local copy gets the same header and index (the parts above were read from it before this).
+    const liveDone = this.live && this.parts.length && this.parts.length === this.nextPart - 1;
+    if (plan) {
+      try {
+        mp4.applyPlan(this.localPath, plan);
+        this.indexed = plan;
+      } catch (err) {
+        console.warn("[uploader] couldn't index the local copy:", err.message); // a fallback upload sends it as recorded
+      }
+      if (this.indexed || liveDone) this.totalBytes += plan.header.length - plan.headerEnd + plan.tail.length;
+    }
 
-    if (this.live && this.parts.length && this.parts.length === this.nextPart - 1) {
+    if (liveDone) {
       const parts = [...this.parts].sort((a, b) => a.partNumber - b.partNumber);
       return withRetry("complete multipart upload", () => this.target.complete(this.mpu, parts, this.contentType));
     }
     if (this.fileError) throw new Error(`The live upload didn't finish and the local copy couldn't be written (${this.fileError.message})`);
     return this.uploadLocalFile(onProgress);
+  }
+
+  /** Duration + seek index for an MP4 recording, when the local copy is complete. */
+  #indexPlan() {
+    if (!this.indexMp4 || this.fileError) return null;
+    try {
+      const plan = mp4.plan(this.localPath);
+      // Only for a cleanly finished file: every byte of it was (or will be) uploaded as recorded.
+      if (!plan || plan.usableSize !== this.totalBytes) return null;
+      if (this.firstJob && plan.headerEnd > this.firstJob.length) return null;
+      return plan;
+    } catch (err) {
+      console.warn("[uploader] no seek index:", err.message);
+      return null;
+    }
   }
 
   /** Flushes and closes the local copy (quitting mid-recording). */

@@ -31,8 +31,21 @@ type Props = {
   /** Seconds on the trimmed timeline, on every time update. */
   onTime?: (seconds: number) => void;
   markers?: PlayerMarker[];
+  /** The recording's length as the server knows it (ms). Used when the file doesn't say (see fileLength). */
+  knownDurationMs?: number | null;
   className?: string;
 };
+
+/**
+ * Recordings made before desktop 1.0.14 are fragmented MP4 without a total duration: Firefox reports only
+ * the first chunk ("0:00") and the number grows while playing. When the file's own length is missing or far
+ * shorter than what the server recorded, trust the server.
+ */
+function fileLength(fileDuration: number, knownMs: number | null | undefined): number {
+  const file = Number.isFinite(fileDuration) && fileDuration > 0 ? fileDuration : 0;
+  const known = knownMs && knownMs > 0 ? knownMs / 1000 : 0;
+  return known && (!file || file < known * 0.8) ? known : file;
+}
 
 const SHORTCUTS: Array<[string, string]> = [
   ["Space / K", "Play or pause"],
@@ -51,7 +64,7 @@ const SHORTCUTS: Array<[string, string]> = [
  * Everything the viewer sees works on a "virtual" timeline that starts at the trim start and ends at the
  * trim end, so a trimmed video looks and behaves exactly like a shorter one.
  */
-export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, markers, className }, ref) {
+export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, poster, startAt, trim, autoPlay, onFirstPlay, onTime, markers, knownDurationMs, className }, ref) {
   const root = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -76,7 +89,8 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
   const [help, setHelp] = useState(false);
 
   const base = trim ? trim.startMs / 1000 : 0;
-  const end = trim ? Math.min(trim.endMs / 1000, fileDuration || Infinity) : fileDuration;
+  const length = fileLength(fileDuration, knownDurationMs);
+  const end = trim ? Math.min(trim.endMs / 1000, length || Infinity) : length;
   const duration = Math.max(0, end - base);
   const bounds = useRef({ base, end, duration });
   bounds.current = { base, end, duration };
@@ -295,7 +309,8 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player({ src, pos
           if (startApplied.current) return;
           startApplied.current = true;
           const b = trim ? trim.startMs / 1000 : 0;
-          const len = (trim ? Math.min(trim.endMs / 1000, v.duration) : v.duration) - b;
+          const full = fileLength(v.duration, knownDurationMs);
+          const len = (trim ? Math.min(trim.endMs / 1000, full) : full) - b;
           const offset = startAt != null && startAt > 0 && startAt < len ? startAt : 0;
           if (b + offset > 0) v.currentTime = b + offset;
           // Tell the page where we start (timestamped comments, "copy link at…") before any playback.

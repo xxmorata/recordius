@@ -25,6 +25,7 @@ const config = require("./config");
 require("./http").useForVercelBlob(); // uploads to Vercel Blob use the browser's network stack too
 const api = require("./api");
 const updater = require("./updater");
+const mp4Index = require("./mp4-index");
 const { LiveUploader, uploadTarget, uploadFile, uploadThumbnail } = require("./uploader");
 const library = require("./library");
 
@@ -758,10 +759,20 @@ function retryFailedUploads({ manual = false } = {}) {
           throw err;
         }
         const ext = path.extname(p.localPath).slice(1);
+        const recorded = fs.statSync(p.localPath);
+        // Real duration and seek index, also for a recording cut short by a crash (no-op if already done).
+        let indexed = null;
+        if (ext === "mp4") {
+          try {
+            indexed = mp4Index.finalizeFile(p.localPath);
+          } catch (err) {
+            console.warn("[main] no seek index for", p.id, err.message);
+          }
+        }
         await uploadFile(uploadTarget(upload, p.id, api.upload), p.localPath, p.contentType ?? (ext === "webm" ? "video/webm" : "video/mp4"));
         const info = fs.statSync(p.localPath);
-        // Interrupted mid-recording (crash, quit): the length is roughly from start to the last write.
-        const durationMs = p.durationMs || Math.max(1000, info.mtimeMs - (p.recordingStartedAt ?? info.birthtimeMs));
+        // Interrupted mid-recording (crash, quit): the file knows its length; otherwise start to last write.
+        const durationMs = p.durationMs || indexed?.durationMs || Math.max(1000, recorded.mtimeMs - (p.recordingStartedAt ?? recorded.birthtimeMs));
         await api.completeVideo(p.id, durationMs, info.size);
         library.removePending(p.id);
         library.markUploaded(p.id, p.localPath);

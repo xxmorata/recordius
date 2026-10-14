@@ -32,6 +32,7 @@ export function EmbedPlayer({ initial, shareUrl }: { initial: Video; shareUrl: s
           poster={video.thumbUrl}
           startAt={startAt}
           trim={video.trim}
+          knownDurationMs={video.originalDurationMs}
           className="h-full rounded-none"
           onTime={watch.onTime}
           onFirstPlay={watch.onFirstPlay}

@@ -6,7 +6,8 @@ const { app } = require("electron");
 const DIR = app.getPath("userData"); // ~/Library/Application Support/Recordius
 const CONFIG_FILE = path.join(DIR, "config.json");
 const TOKEN_FILE = path.join(DIR, "device-token");
-const RECORDINGS_DIR = path.join(os.homedir(), "Movies", "Recordius");
+// Test runs (RECORDIUS_USER_DATA) keep their recordings inside their own scratch profile, never in ~/Movies.
+const RECORDINGS_DIR = process.env.RECORDIUS_USER_DATA ? path.join(process.env.RECORDIUS_USER_DATA, "Recordings") : path.join(os.homedir(), "Movies", "Recordius");
 
 const DEFAULTS = {
   server: null, // e.g. https://recordius.example.com
