@@ -22,6 +22,7 @@ const {
   powerMonitor,
 } = require("electron");
 const config = require("./config");
+require("./http").useForVercelBlob(); // uploads to Vercel Blob use the browser's network stack too
 const api = require("./api");
 const updater = require("./updater");
 const { LiveUploader, uploadTarget, uploadFile, uploadThumbnail } = require("./uploader");
@@ -362,7 +363,8 @@ function normalizeServer(input) {
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
   try {
     const u = new URL(url);
-    if (u.protocol !== "https:" && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname)) return null;
+    const testProxy = E2E && Boolean(process.env.RECORDIUS_E2E_PROXY); // the proxy test serves plain HTTP on a fake host
+    if (u.protocol !== "https:" && !testProxy && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname)) return null;
     return `${u.protocol}//${u.host}`;
   } catch {
     return null;

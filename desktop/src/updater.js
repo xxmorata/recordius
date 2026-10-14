@@ -1,5 +1,6 @@
 // In-app updates that keep macOS permissions: the signed launcher bundle never changes; new app
 // code is downloaded to ~/Library/Application Support/Recordius/app/<version>/ and loaded by it.
+const http = require("./http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
@@ -27,7 +28,7 @@ function newer(a, b) {
 
 /** Looks up the latest GitHub release. `releasesUrl` is overridable for tests. */
 async function check(releasesUrl = process.env.RECORDIUS_UPDATE_URL || `https://api.github.com/repos/${config.load().updateRepo}/releases/latest`) {
-  const res = await fetch(releasesUrl, { headers: { accept: "application/vnd.github+json", "user-agent": "Recordius-desktop" } });
+  const res = await http.fetch(releasesUrl, { headers: { accept: "application/vnd.github+json", "user-agent": "Recordius-desktop" } });
   if (!res.ok) throw new Error(`Update check failed (${res.status})`);
   const release = await res.json();
   const version = String(release.tag_name ?? "").replace(/^v/, "");
@@ -56,14 +57,14 @@ async function install(info, onProgress = () => {}) {
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.mkdirSync(tmp, { recursive: true });
   try {
-    const sumsText = await (await fetch(info.sumsUrl)).text();
+    const sumsText = await (await http.fetch(info.sumsUrl)).text();
     const expected = sumsText
       .split("\n")
       .map((l) => l.trim().split(/\s+\*?/))
       .find(([, name]) => name === info.tarballName)?.[0];
     if (!expected) throw new Error("Checksum for the update is missing");
 
-    const res = await fetch(info.tarballUrl);
+    const res = await http.fetch(info.tarballUrl);
     if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`);
     const total = Number(res.headers.get("content-length")) || 0;
     const file = path.join(tmp, info.tarballName);

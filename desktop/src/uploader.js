@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const http = require("./http");
 const { createMultipartUpload, uploadPart, completeMultipartUpload, put } = require("@vercel/blob/client");
 
 const MAX_PARALLEL = 3;
@@ -60,9 +61,9 @@ function blobTarget(grant) {
 async function putSigned(url, body, headers) {
   let res;
   try {
-    res = await fetch(url, { method: "PUT", body, headers });
+    res = await http.fetch(url, { method: "PUT", body, headers });
   } catch (err) {
-    throw new Error(`Can't reach the storage (${err.cause?.code ?? err.message})`);
+    throw new Error(http.unreachable("the storage", err));
   }
   if (!res.ok) {
     const err = new Error(`The storage refused the upload (${res.status})`);

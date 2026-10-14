@@ -5,6 +5,7 @@
 //   RECORDIUS_E2E_OPTS=<json>       extra recording settings
 //   RECORDIUS_E2E_OUT=<file>        where to write the JSON result
 //   RECORDIUS_E2E_SHOTS=<dir>       save screenshots of the app's windows
+//   RECORDIUS_E2E_PROXY=<host:port>   send all traffic through this proxy (localhost included), like a Mac with a system proxy
 //   RECORDIUS_E2E_PROBE=<binary>    (devices mode) prints {"mic":bool,"camera":bool}: is any mic/camera in use on this Mac
 const fs = require("node:fs");
 const path = require("node:path");
@@ -279,6 +280,10 @@ module.exports = ({ startRecording, stopRecording, cancelRecording, togglePause,
 
   app.whenReady().then(async () => {
     try {
+      if (process.env.RECORDIUS_E2E_PROXY) {
+        const { session } = require("electron");
+        await session.defaultSession.setProxy({ proxyRules: process.env.RECORDIUS_E2E_PROXY, proxyBypassRules: "<-loopback>" });
+      }
       await wait(1200);
       if (process.env.RECORDIUS_E2E_CONNECT) {
         const [server, token] = process.env.RECORDIUS_E2E_CONNECT.split(/\s+/);

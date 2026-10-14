@@ -169,6 +169,7 @@ Database changes are applied automatically when the new version starts.
 | Can't sign in over plain `http://<ip>` | Use HTTPS (step 2b). Plain HTTP only works for `localhost`. |
 | HTTPS certificate isn't issued | The domain's DNS must point to this server, and ports 80 and 443 must be open. Check with `docker compose logs https`. |
 | Uploads fail with an S3 bucket | The bucket's CORS rule must allow your site and expose `ETag`. See [storage](docs/self-hosting.md#any-s3-compatible-bucket--storages3). |
+| Mac app says *Can't reach https://…* | Open that address in the browser. If it doesn't load either, the server is blocked on that network (some countries block `*.vercel.app`): add your own domain or self-host. If it loads, update the app to 1.0.13 or newer; it then uses the Mac's proxy/VPN settings like the browser. The recording is kept locally and uploads on **Retry now**. |
 | Mac app issues | See [docs/desktop.md](docs/desktop.md#troubleshooting). |
 
 Still stuck? Open an issue: <https://github.com/xxmorata/recordius/issues>.

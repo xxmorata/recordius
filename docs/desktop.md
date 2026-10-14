@@ -87,6 +87,11 @@ Settings (gear icon or <kbd>⌘,</kbd>): countdown, mirror camera, quality, bubb
 - **"Connect Recordius to …?"** — the app shows this when a connect link didn't come from the app's own *Continue in browser* step (for example after you signed in again in between). Check that the address is your Recordius server, then click *Connect*. Never connect to an address you don't recognise.
 - **"Enter your workspace address" / can't connect** — the server must use `https://` (only `http://localhost` is allowed without it).
 - **"This Mac is no longer connected"** — the device was disconnected from the web app; connect it again from *Get the app*.
+- **"Can't reach https://… — check your internet connection, VPN or proxy"** — the Mac couldn't connect to your server (or its storage). First open the same address in your browser:
+  - it doesn't open either → the server is down or blocked on this network. Some countries and company networks block `*.vercel.app`; give the Vercel project your own domain, or self-host on your own server (see [self-hosting](self-hosting.md));
+  - it opens in the browser → update the app (Settings → *Check for updates*). Since 1.0.13 the app uses the same network settings as the browser: system proxy, PAC and VPN apps.
+
+  Your recording isn't lost: it's saved in `~/Movies/Recordius` and uploads on **Retry now** (or by itself once the connection is back).
 - **Recording works but the share page says "uploading" for a long time** — open the panel: if the upload didn't finish, a banner shows **Retry now** (the app also retries by itself). The local file is in `~/Movies/Recordius`.
 - Logs: run `/Applications/Recordius.app/Contents/MacOS/Recordius` from Terminal to see output.
 

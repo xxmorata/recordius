@@ -1,4 +1,5 @@
 const config = require("./config");
+const http = require("./http");
 
 class ApiError extends Error {
   constructor(status, message, code = null) {
@@ -14,7 +15,7 @@ async function call(method, route, body, { server, token } = {}) {
   if (!base || !bearer) throw new ApiError(401, "Not connected to a workspace");
   let res;
   const send = () =>
-    fetch(`${base}${route}`, {
+    http.fetch(`${base}${route}`, {
       method,
       headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", "user-agent": "Recordius-desktop" },
       body: body ? JSON.stringify(body) : undefined,
@@ -29,7 +30,7 @@ async function call(method, route, body, { server, token } = {}) {
       res = await send();
     }
   } catch (err) {
-    throw new ApiError(0, `Can't reach ${base} (${err.cause?.code ?? err.message})`);
+    throw new ApiError(0, http.unreachable(base, err));
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, data.error ?? `${method} ${route} failed (${res.status})`, data.code ?? null);
@@ -38,7 +39,7 @@ async function call(method, route, body, { server, token } = {}) {
 
 function isStaleConnection(err) {
   const code = err?.cause?.code ?? err?.code;
-  return code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "EPIPE";
+  return ["ECONNRESET", "UND_ERR_SOCKET", "EPIPE", "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_EMPTY_RESPONSE"].includes(code);
 }
 
 module.exports = {
