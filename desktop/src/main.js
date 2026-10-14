@@ -116,22 +116,38 @@ function ensurePanelWindow() {
   });
   // The preview bubble belongs to the panel: it goes away when the panel is hidden (⌘H, close) or
   // simply loses focus (another app in front), and comes back when the panel is focused again.
+  // macOS sometimes reports "hide" right after a show, or "show"/"focus" twice: tell the panel only what's
+  // actually true, so the camera and microphone are on exactly while the panel is in front.
+  const inFront = (front) => {
+    const really = w.isVisible() && !w.isMinimized();
+    if (front ? really : !really || !w.isFocused()) w.webContents.send("panel:visibility", front);
+  };
   w.on("show", () => {
     panelShowStamp = Date.now();
-    w.webContents.send("panel:visibility", true);
+    inFront(true);
   });
   w.on("focus", () => {
     panelShowStamp = Date.now();
-    w.webContents.send("panel:visibility", true);
+    inFront(true);
   });
   w.on("hide", () => {
+    // A spurious "hide" for a visible window is ignored; a real one that's merely reported early is re-checked.
+    if (w.isVisible()) return setTimeout(() => !w.isDestroyed() && !w.isVisible() && inFront(false), 400);
     panelHideStamp = Date.now();
-    w.webContents.send("panel:visibility", false);
+    inFront(false);
     if (state === "idle") hideCamera();
   });
-  w.on("blur", () => {
-    if (state === "idle" && !E2E) hideCamera();
-  });
+  // Behind another app or minimized: release the camera and the mic meter too, so the macOS camera/mic
+  // indicators go off. (Automated runs aren't frontmost, so they'd blur all the time — except the devices test.)
+  const notInFront = () => {
+    if (E2E && !process.env.RECORDIUS_E2E.startsWith("devices")) return;
+    if (w.isFocused() && !w.isMinimized()) return;
+    inFront(false);
+    if (state === "idle") hideCamera();
+  };
+  w.on("blur", notInFront);
+  w.on("minimize", notInFront);
+  w.on("restore", () => w.isFocused() && inFront(true));
   return w;
 }
 
@@ -150,6 +166,7 @@ function showPanel(view) {
       panelPlaced = true;
       w.show();
     }
+    if (w.isMinimized()) w.restore();
     w.focus();
     // Electron doesn't reliably emit "show" for this pre-created window, and "focus" only fires when the
     // app is frontmost — tell the panel directly, so it always loads screens and devices when it opens.
@@ -162,7 +179,11 @@ function showPanel(view) {
 }
 
 function hidePanel() {
-  win.panel?.hide();
+  if (win.panel && !win.panel.isDestroyed()) {
+    win.panel.hide();
+    panelHideStamp = Date.now();
+    win.panel.webContents.send("panel:visibility", false); // don't wait for the window event: mic and camera off now
+  }
   if (state === "idle") hideCamera();
 }
 
@@ -473,9 +494,20 @@ function checkedVideo(video) {
 
 // ───────────────────────────── recording lifecycle ─────────────────────────────
 
+const openRecorderRequests = new Set();
+
+/** Cancelling a recording that's still starting: stop waiting for the recorder (it gives up on its side too). */
+function abortRecorderRequests() {
+  for (const abort of [...openRecorderRequests]) abort();
+}
+
 /** Asks the hidden recorder window for something; never waits forever (a crashed renderer never answers). */
 function recorderRequest(channel, payload, reply, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
+    const abort = () => {
+      cleanup();
+      reject(Object.assign(new Error("cancelled"), { cancelled: true }));
+    };
     const ok = (_e, data) => {
       cleanup();
       resolve(data);
@@ -489,12 +521,14 @@ function recorderRequest(channel, payload, reply, timeoutMs = 30000) {
       reject(new Error(`the recorder didn't answer (${channel})`));
     }, timeoutMs);
     const cleanup = () => {
+      openRecorderRequests.delete(abort);
       clearTimeout(timer);
       ipcMain.removeListener(reply, ok);
       ipcMain.removeListener("rec:error", fail);
     };
     ipcMain.once(reply, ok);
     ipcMain.once("rec:error", fail);
+    openRecorderRequests.add(abort);
     const recorder = ensureRecorderWindow();
     if (recorder.isDestroyed()) return fail(null, "the recorder window is gone");
     recorder.webContents.send(channel, payload);
@@ -515,8 +549,8 @@ async function startRecording(opts) {
   const settings = E2E ? { ...config.load(), ...opts } : config.save(opts ?? {});
   const plan = recordingPlan(settings);
   if (plan.mode !== "cam" && !plan.sourceId) return showPanel();
-  win.panel?.hide();
   setState("preparing");
+  hidePanel(); // releases the panel's mic meter before the recorder opens the mic
 
   if (plan.mode !== "cam" && !lastSources.some((s) => s.id === plan.sourceId)) {
     lastSources = await desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 0, height: 0 } }).catch(() => []);
@@ -578,6 +612,7 @@ async function startRecording(opts) {
     showControls(display);
     setState("recording");
   } catch (err) {
+    if (err.cancelled) return; // cancelled while starting: cancelRecording cleaned up
     console.error("[main] start failed", err);
     if (win.countdown && !win.countdown.isDestroyed()) win.countdown.close();
     hideCamera();
@@ -761,6 +796,7 @@ async function cancelRecording({ restart = false } = {}) {
   if (win.countdown && !win.countdown.isDestroyed()) win.countdown.close();
   if (!restart) hideCamera();
   win.recorder?.webContents.send("rec:discard");
+  abortRecorderRequests();
   setState("idle");
   if (sessionRec) {
     sessionRec.uploader.abort();
@@ -1139,4 +1175,4 @@ app.on("before-quit", (e) => {
 });
 app.on("will-quit", () => globalShortcut.unregisterAll());
 
-if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, handleDeepLink, startConnect, hostname: os.hostname() });
+if (E2E) require("./e2e-hooks")({ startRecording, stopRecording, cancelRecording, togglePause, showPanel, hidePanel, connect, win, getState: () => state, getRec: () => rec, retryFailedUploads, handleDeepLink, startConnect, hostname: os.hostname() });

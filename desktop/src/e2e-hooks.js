@@ -5,6 +5,7 @@
 //   RECORDIUS_E2E_OPTS=<json>       extra recording settings
 //   RECORDIUS_E2E_OUT=<file>        where to write the JSON result
 //   RECORDIUS_E2E_SHOTS=<dir>       save screenshots of the app's windows
+//   RECORDIUS_E2E_PROBE=<binary>    (devices mode) prints {"mic":bool,"camera":bool}: is any mic/camera in use on this Mac
 const fs = require("node:fs");
 const path = require("node:path");
 const { app, desktopCapturer } = require("electron");
@@ -20,7 +21,7 @@ async function shot(w, name) {
   return file;
 }
 
-module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec, retryFailedUploads, handleDeepLink, startConnect }) => {
+module.exports = ({ startRecording, stopRecording, cancelRecording, togglePause, showPanel, hidePanel, connect, win, getState, getRec, retryFailedUploads, handleDeepLink, startConnect }) => {
   const [mode, msText] = process.env.RECORDIUS_E2E.split(":");
   const ms = Number(msText) || 6000;
   if (process.env.RECORDIUS_E2E_FAKE) {
@@ -39,6 +40,103 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
       await wait(20);
     }
     return null;
+  };
+
+  // Every camera/mic track any window opens, so a test can tell which ones are still live (= the macOS dot is on).
+  app.on("web-contents-created", (_e, wc) =>
+    wc.on("dom-ready", () =>
+      wc
+        .executeJavaScript(
+          `(() => { if (window.__liveTracks) return; window.__liveTracks = []; const md = navigator.mediaDevices; if (!md) return;
+            for (const fn of ["getUserMedia", "getDisplayMedia"]) { const orig = md[fn].bind(md);
+              md[fn] = async (c) => { const s = await orig(c); for (const t of s.getTracks()) window.__liveTracks.push(t); return s; }; } })()`,
+        )
+        .catch(() => {}),
+    ),
+  );
+
+  /** Mic and camera are released whenever Recordius isn't showing them: panel hidden, unfocused, minimized, after recording. */
+  const runDevices = async () => {
+    const { execFileSync } = require("node:child_process");
+    const liveIn = async (w) =>
+      !w || w.isDestroyed() ? [] : w.webContents.executeJavaScript(`(window.__liveTracks || []).filter((t) => t.readyState === "live").map((t) => t.kind)`).catch(() => []);
+    const live = async () => {
+      const r = {};
+      for (const name of ["panel", "camera", "recorder"]) {
+        const kinds = await liveIn(win[name]);
+        if (kinds.length) r[name] = kinds;
+      }
+      return r;
+    };
+    const os = () => (process.env.RECORDIUS_E2E_PROBE ? JSON.parse(execFileSync(process.env.RECORDIUS_E2E_PROBE, { encoding: "utf8" })) : null);
+    const r = { steps: [] };
+    const check = async (step, expectOff) => {
+      const tracks = await live();
+      const entry = { step, tracks, os: os() };
+      entry.ok = !expectOff || (Object.keys(tracks).length === 0 && (!entry.os || (!entry.os.mic && !entry.os.camera)));
+      r.steps.push(entry);
+    };
+    const settle = () => wait(5500); // the camera bubble keeps its camera 4 s after hiding, so toggling is instant
+
+    showPanel();
+    await until(() => win.panel && !win.panel.webContents.isLoading());
+    for (let t = 0; t < 100 && !(await win.panel.webContents.executeJavaScript("warmed")); t++) await wait(200);
+    await wait(1500);
+    await check("panel open", false);
+    // The panel gets "shown" from several places at once (show, focus, the direct message): no extra streams.
+    showPanel();
+    win.panel.emit("focus");
+    showPanel();
+    win.panel.emit("focus");
+    await wait(2500);
+    await check("panel re-shown 4×", false);
+    hidePanel();
+    await settle();
+    await check("panel closed (Esc / ⌘W)", true);
+
+    showPanel();
+    await wait(3000);
+    // Another app in front: focus a window that isn't the panel (tests run without being the frontmost app).
+    const other = new (require("electron").BrowserWindow)({ width: 200, height: 200, show: false });
+    other.show();
+    other.focus();
+    win.panel.blur();
+    win.panel.emit("blur");
+    await settle();
+    await check("panel behind another app", true);
+    other.destroy();
+    win.panel.focus();
+    win.panel.emit("focus");
+    await wait(3000);
+    await check("panel focused again", false);
+    win.panel.minimize();
+    win.panel.emit("blur");
+    await settle();
+    await check("panel minimized", true);
+    win.panel.restore();
+    hidePanel();
+    await settle();
+
+    // A recording with camera and mic: everything is released once it's over.
+    startRecording({ source: "camera", cameraId: null, micId: null, systemAudio: false, countdown: false });
+    if ((await until(() => getState() === "recording", 30000)) === null) throw new Error(`recording did not start (state=${getState()})`);
+    await wait(3000);
+    await check("recording", false);
+    await stopRecording();
+    await settle();
+    await check("after a recording", true);
+
+    // Cancelled while the recorder is still opening the devices.
+    startRecording({ source: "camera", cameraId: null, micId: null, systemAudio: false, countdown: false });
+    await until(() => getState() === "preparing", 5000);
+    await wait(50);
+    await cancelRecording();
+    await settle();
+    await wait(4000);
+    await check("cancelled while starting", true);
+
+    r.ok = r.steps.every((s) => s.ok);
+    out({ ok: r.ok, devices: r });
   };
 
   const runUi = async () => {
@@ -182,6 +280,7 @@ module.exports = ({ startRecording, stopRecording, togglePause, showPanel, hideP
         await connect(server, token);
       }
       if (mode === "ui") return await runUi();
+      if (mode === "devices") return await runDevices();
       if (mode === "update") {
         const updater = require("./updater");
         const info = await updater.check();

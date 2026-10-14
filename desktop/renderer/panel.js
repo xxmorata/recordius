@@ -6,6 +6,7 @@ let settings = {}; // recorder choices (mirrors config)
 let sources = { screens: [], windows: [] };
 let devices = { cameras: [], mics: [] };
 let sourcesLoadedAt = 0;
+let panelInFront = false; // shown and focused: only then may the panel use the camera and microphone
 
 const CHECK = `<svg class="check" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4 4 8-8" /></svg>`;
 
@@ -76,7 +77,7 @@ function esc(s) {
 
 let lastPreview = "";
 function updateCameraPreview(force = false) {
-  const enabled = document.body.dataset.view === "recorder" && settings.cameraId !== "none" && (devices.cameras.length > 0 || init?.media.camera === "granted");
+  const enabled = panelInFront && document.body.dataset.view === "recorder" && settings.cameraId !== "none" && (devices.cameras.length > 0 || init?.media.camera === "granted");
   const payload = { enabled, cameraId: settings.cameraId === "none" ? null : settings.cameraId };
   const key = JSON.stringify(payload);
   if (!force && key === lastPreview) return; // render() runs often; only talk to the main process on change
@@ -206,22 +207,27 @@ async function loadDevices(media) {
   if (settings.micId !== "none" && !devices.mics.some((d) => d.deviceId === settings.micId)) settings.micId = devices.mics[0]?.deviceId ?? "none";
 }
 
-const meter = { stream: null, ctx: null, raf: 0 };
+// The level meter holds the microphone (macOS shows its orange dot), so it only runs while the panel is
+// actually in front. Every start/stop bumps `gen`: a getUserMedia that resolves after a newer start or a
+// stop releases its stream instead of keeping the mic open in the background.
+const meter = { stream: null, ctx: null, raf: 0, gen: 0 };
 function stopMeter() {
+  meter.gen++;
   cancelAnimationFrame(meter.raf);
   meter.stream?.getTracks().forEach((t) => t.stop());
-  meter.ctx?.close();
+  meter.ctx?.close().catch(() => {});
   meter.stream = meter.ctx = null;
   $("level").style.width = "0";
 }
 async function startMeter() {
   stopMeter();
+  const gen = meter.gen;
   const id = settings.micId;
   $("meter").hidden = !id || id === "none";
-  if ($("meter").hidden || document.body.dataset.view !== "recorder") return;
+  if ($("meter").hidden || document.body.dataset.view !== "recorder" || !panelInFront) return;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: id } }, video: false });
-    if (settings.micId !== id || document.hidden) return stream.getTracks().forEach((t) => t.stop());
+    if (gen !== meter.gen || !panelInFront) return stream.getTracks().forEach((t) => t.stop());
     const ctx = new AudioContext();
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
@@ -236,7 +242,7 @@ async function startMeter() {
     };
     tick();
   } catch {
-    $("meter").hidden = true;
+    if (gen === meter.gen) $("meter").hidden = true;
   }
 }
 
@@ -487,9 +493,11 @@ api.on("panel:navigate", (view) => setView(view));
 let shownBeforeBoot = false; // the panel can be shown while boot() is still loading
 api.on("panel:visibility", (visible) => {
   if (!init) {
-    shownBeforeBoot = visible;
+    shownBeforeBoot = panelInFront = visible;
     return;
   }
+  if (visible === panelInFront) return; // "show", "focus" and the direct message often arrive together
+  panelInFront = visible;
   if (visible) {
     if (document.body.dataset.view === "recorder") {
       if (!warmed) warmUp();
@@ -557,6 +565,9 @@ async function boot() {
   render();
   renderPending(init.pendingUploads);
   // Opened right at launch: the "shown" signal came before we were ready, so warm up now.
-  if (shownBeforeBoot || init.visible) warmUp();
+  if (shownBeforeBoot || init.visible) {
+    panelInFront = true;
+    warmUp();
+  }
 }
 boot();

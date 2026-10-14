@@ -21,6 +21,8 @@ let recorder = null;
 let audioCtx = null;
 let discard = false;
 let chunkChain = Promise.resolve();
+// Bumped when a recording is discarded: a prepare() still opening devices for it gives them back.
+let prepareGen = 0;
 
 function pickMimeType() {
   return MIME_CANDIDATES.find((t) => MediaRecorder.isTypeSupported(t)) ?? "video/webm";
@@ -30,6 +32,8 @@ function track(stream) {
   streams.push(stream);
   return stream;
 }
+
+class Cancelled extends Error {}
 
 function stopStreams() {
   for (const s of streams) for (const t of s.getTracks()) t.stop();
@@ -132,23 +136,34 @@ function mixAudio(audioStreams) {
 async function prepare(settings) {
   discard = false;
   stopStreams();
+  const gen = ++prepareGen;
+  // Opening a device can take seconds; if the recording was cancelled meanwhile, don't keep anything.
+  const still = (stream) => {
+    if (gen !== prepareGen) {
+      stream?.getTracks().forEach((t) => t.stop());
+      throw new Cancelled("cancelled");
+    }
+    return stream;
+  };
   const warnings = [];
 
   const box = QUALITY[settings.quality] ?? QUALITY[1080];
-  let video = settings.mode === "cam" ? await cameraStream(settings.cameraId, box) : await screenStream(settings.sourceId, box);
+  let video = still(settings.mode === "cam" ? await cameraStream(settings.cameraId, box) : await screenStream(settings.sourceId, box));
   if (settings.mode === "cam" && settings.mirrorCamera !== false) video = mirrorStream(video);
   const audio = [];
   if (settings.micId !== "none") {
     try {
-      audio.push(await micStream(settings.micId));
+      audio.push(still(await micStream(settings.micId)));
     } catch (err) {
+      if (err instanceof Cancelled) throw err;
       warnings.push(`Microphone unavailable (${err.name}); recording without it.`);
     }
   }
   if (settings.systemAudio && settings.mode !== "cam") {
     try {
-      audio.push(await systemAudioStream());
+      audio.push(still(await systemAudioStream()));
     } catch (err) {
+      if (err instanceof Cancelled) throw err;
       warnings.push(`System audio unavailable on this Mac (${err.name}).`);
     }
   }
@@ -206,6 +221,8 @@ window.recordius.on("rec:prepare", async (settings) => {
   try {
     window.recordius.send("rec:prepared", await prepare(settings));
   } catch (err) {
+    // Cancelled: its streams are already stopped, and a newer recording may own `streams` by now.
+    if (err instanceof Cancelled) return;
     stopStreams();
     const hint = err.name === "NotAllowedError" || err.name === "NotReadableError" ? " Check Screen Recording / Camera permissions in System Settings." : "";
     window.recordius.send("rec:error", `${err.name}: ${err.message}.${hint}`);
@@ -233,6 +250,7 @@ window.recordius.on("rec:stop", () => {
 });
 window.recordius.on("rec:discard", () => {
   discard = true;
+  prepareGen++;
   if (recorder && recorder.state !== "inactive") recorder.stop();
   else stopStreams();
 });
